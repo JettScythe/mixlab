@@ -3,6 +3,9 @@ name: build
 on:
   push:
     branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -13,7 +16,10 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          cache: true
       - run: flutter pub get
+      - name: Check formatting
+        run: dart format --output=none --set-exit-if-changed .
       - run: flutter analyze
       - run: flutter test
 
@@ -25,12 +31,19 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          cache: true
       - run: flutter pub get
       - run: flutter build macos --release
+      - name: Tar app bundle
+        # upload-artifact zips without preserving symlinks, which corrupts
+        # the .app's Frameworks directory. Tar keeps them intact.
+        run: |
+          cd build/macos/Build/Products/Release
+          tar -czf mixlab-macos.tar.gz mixlab.app
       - uses: actions/upload-artifact@v4
         with:
-          name: ejuice-macos
-          path: build/macos/Build/Products/Release/*.app
+          name: mixlab-macos
+          path: build/macos/Build/Products/Release/mixlab-macos.tar.gz
 
   build-windows:
     needs: test
@@ -40,11 +53,12 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          cache: true
       - run: flutter pub get
       - run: flutter build windows --release
       - uses: actions/upload-artifact@v4
         with:
-          name: ejuice-windows
+          name: mixlab-windows
           path: build/windows/x64/runner/Release/
 
   build-linux:
@@ -52,14 +66,44 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y \
-          clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+      - name: Install Linux build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libstdc++-12-dev
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          cache: true
       - run: flutter pub get
       - run: flutter build linux --release
+      - name: Tar bundle
+        run: |
+          cd build/linux/x64/release
+          tar -czf mixlab-linux.tar.gz bundle
       - uses: actions/upload-artifact@v4
         with:
-          name: ejuice-linux
-          path: build/linux/x64/release/bundle/
+          name: mixlab-linux
+          path: build/linux/x64/release/mixlab-linux.tar.gz
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Zip Windows folder
+        run: |
+          cd artifacts/mixlab-windows
+          zip -r ../mixlab-windows.zip .
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/mixlab-macos/mixlab-macos.tar.gz
+            artifacts/mixlab-linux/mixlab-linux.tar.gz
+            artifacts/mixlab-windows.zip
+          generate_release_notes: true
