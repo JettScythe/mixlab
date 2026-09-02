@@ -1,5 +1,5 @@
 # MixLab
-
+[![build](https://github.com/JettScythe/mixlab/actions/workflows/build.yaml/badge.svg)](https://github.com/JettScythe/mixlab/actions)
 A weight-first e-liquid calculator with inventory, cost tracking, and a
 guided weigh-along mode. Cross-platform desktop and mobile, built with
 Flutter. All data stays on your machine.
@@ -206,3 +206,9 @@ Nicotine concentrate is genuinely hazardous. Wear nitrile gloves and eye
 protection, work in a ventilated space, and store it away from children
 and pets. This software is a calculator, not a safety device — verify
 its output before you mix anything you intend to inhale.
+
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+

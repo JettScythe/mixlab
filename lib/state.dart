@@ -470,6 +470,26 @@ class AppState extends ChangeNotifier {
     return null;
   }
 
+  Recipe? recipeById(String? id) {
+    if (id == null) return null;
+    for (final r in recipes) {
+      if (r.id == id) return r;
+    }
+    return null;
+  }
+
+  /// Another recipe with the same name, ignoring [exceptId]. Not blocking —
+  /// duplicate names are legal, just worth flagging.
+  Recipe? recipeByName(String name, {String? exceptId}) {
+    final q = name.trim().toLowerCase();
+    if (q.isEmpty) return null;
+    for (final r in recipes) {
+      if (r.id == exceptId) continue;
+      if (r.name.trim().toLowerCase() == q) return r;
+    }
+    return null;
+  }
+
   Ingredient? flavorByName(String query) {
     final q = query.trim().toLowerCase();
     if (q.isEmpty) return null;
@@ -624,8 +644,58 @@ class AppState extends ChangeNotifier {
     _save();
   }
 
-  void removeRecipe(String id) {
-    recipes.removeWhere((e) => e.id == id);
+  /// Replaces a recipe in place, keeping its position in the list.
+  /// Falls back to appending if the id is unknown.
+  void updateRecipe(Recipe r) {
+    final i = recipes.indexWhere((e) => e.id == r.id);
+    if (i >= 0) {
+      recipes[i] = r;
+    } else {
+      recipes.add(r);
+    }
+    notifyListeners();
+    _save();
+  }
+
+  /// Copies a recipe under a new id, inserted right after the original.
+  Recipe? duplicateRecipe(String id) {
+    final i = recipes.indexWhere((e) => e.id == id);
+    if (i < 0) return null;
+    final src = recipes[i];
+    final copy = Recipe(
+      id: newId(),
+      name: '${src.name} (copy)',
+      notes: src.notes,
+      batchMl: src.batchMl,
+      targetNic: src.targetNic,
+      targetVgPercent: src.targetVgPercent,
+      flavors: [
+        for (final f in src.flavors)
+          RecipeFlavor(
+            ingredientId: f.ingredientId,
+            name: f.name,
+            percent: f.percent,
+          ),
+      ],
+    );
+    recipes.insert(i + 1, copy);
+    notifyListeners();
+    _save();
+    return copy;
+  }
+
+  /// Removes a recipe and returns it with its index so the caller can undo.
+  (Recipe, int)? removeRecipe(String id) {
+    final i = recipes.indexWhere((e) => e.id == id);
+    if (i < 0) return null;
+    final removed = recipes.removeAt(i);
+    notifyListeners();
+    _save();
+    return (removed, i);
+  }
+
+  void restoreRecipe(Recipe r, int index) {
+    recipes.insert(index.clamp(0, recipes.length), r);
     notifyListeners();
     _save();
   }

@@ -3,11 +3,13 @@ import 'package:flutter/material.dart';
 import '../models.dart';
 import '../state.dart';
 import '../widgets/ingredient_picker.dart';
+import 'recipe_editor_page.dart';
 import 'step_mode_page.dart';
 
 class CalculatorPage extends StatefulWidget {
   const CalculatorPage({super.key, required this.state});
   final AppState state;
+
   @override
   State<CalculatorPage> createState() => _CalculatorPageState();
 }
@@ -27,6 +29,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
   String? _vgId;
   final List<_FlavorEntry> _flavors = [];
   String _label = '';
+  String? _loadedRecipeId;
   int _seenRecipeToken = 0;
 
   AppState get s => widget.state;
@@ -74,11 +77,14 @@ class _CalculatorPageState extends State<CalculatorPage> {
   String _fmt(double v) =>
       v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toString();
 
+  Recipe? get _loadedRecipe => s.recipeById(_loadedRecipeId);
+
   void _applyRecipe(Recipe r) {
     _batch.text = _fmt(r.batchMl);
     _nic.text = _fmt(r.targetNic);
     _vg.text = _fmt(r.targetVgPercent);
     _label = r.name;
+    _loadedRecipeId = r.id;
     for (final e in _flavors) {
       e.dispose();
     }
@@ -98,10 +104,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
     if (skipped > 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            '$skipped flavor(s) skipped — '
-            'not found in inventory.',
-          ),
+          content: Text('$skipped flavor(s) skipped — not found in inventory.'),
         ),
       );
     }
@@ -159,6 +162,8 @@ class _CalculatorPageState extends State<CalculatorPage> {
     final nic = s.byId(_nicId) ?? s.firstOfKind(IngredientKind.nicotine);
     final pg = s.byId(_pgId) ?? s.firstOfKind(IngredientKind.pg);
     final vg = s.byId(_vgId) ?? s.firstOfKind(IngredientKind.vg);
+    final loaded = _loadedRecipe;
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -175,8 +180,20 @@ class _CalculatorPageState extends State<CalculatorPage> {
                 ),
                 if (_label.isNotEmpty)
                   Chip(
+                    avatar: loaded != null
+                        ? const Icon(Icons.menu_book, size: 16)
+                        : null,
                     label: Text(_label),
-                    onDeleted: () => setState(() => _label = ''),
+                    onDeleted: () => setState(() {
+                      _label = '';
+                      _loadedRecipeId = null;
+                    }),
+                  ),
+                if (loaded != null)
+                  IconButton(
+                    tooltip: 'Open in recipe editor',
+                    icon: const Icon(Icons.edit_outlined),
+                    onPressed: () => _editLoadedRecipe(loaded),
                   ),
               ],
             ),
@@ -260,6 +277,10 @@ class _CalculatorPageState extends State<CalculatorPage> {
     final ing = s.byId(e.ingredientId);
     final needMl = _val(_batch) * _val(e.percent) / 100;
     final short = ing != null && needMl > ing.stockMl + 1e-9;
+    final dupe =
+        e.ingredientId != null &&
+        _flavors.where((x) => x.ingredientId == e.ingredientId).length > 1;
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Row(
@@ -291,6 +312,18 @@ class _CalculatorPageState extends State<CalculatorPage> {
               ),
             ),
           ),
+          if (dupe)
+            Padding(
+              padding: const EdgeInsets.only(left: 4),
+              child: Tooltip(
+                message: 'Selected more than once — percentages are combined',
+                child: Icon(
+                  Icons.merge_type,
+                  color: Theme.of(context).colorScheme.tertiary,
+                  size: 20,
+                ),
+              ),
+            ),
           if (short)
             Padding(
               padding: const EdgeInsets.only(left: 4),
@@ -299,20 +332,6 @@ class _CalculatorPageState extends State<CalculatorPage> {
                 child: Icon(
                   Icons.warning_amber_rounded,
                   color: Theme.of(context).colorScheme.error,
-                  size: 20,
-                ),
-              ),
-            ),
-          if (e.ingredientId != null &&
-              _flavors.where((x) => x.ingredientId == e.ingredientId).length >
-                  1)
-            Padding(
-              padding: const EdgeInsets.only(left: 4),
-              child: Tooltip(
-                message: 'Selected more than once — percentages are combined',
-                child: Icon(
-                  Icons.merge_type,
-                  color: Theme.of(context).colorScheme.tertiary,
                   size: 20,
                 ),
               ),
@@ -337,6 +356,8 @@ class _CalculatorPageState extends State<CalculatorPage> {
     final set = s.settings;
     final theme = Theme.of(context);
     final ref = set.refBottleMl <= 0 ? 30.0 : set.refBottleMl;
+    final loaded = _loadedRecipe;
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -376,8 +397,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
               style: theme.textTheme.headlineSmall,
             ),
             Text(
-              'Final ratio: '
-              '${r.actualVgPercent.toStringAsFixed(1)}% VG / '
+              'Final ratio: ${r.actualVgPercent.toStringAsFixed(1)}% VG / '
               '${(100 - r.actualVgPercent).toStringAsFixed(1)}% PG',
             ),
             Text('Nicotine: ${r.actualNicMgPerMl.toStringAsFixed(2)} mg/mL'),
@@ -433,9 +453,8 @@ class _CalculatorPageState extends State<CalculatorPage> {
                     const SizedBox(height: 4),
                     for (final i in issues)
                       Text(
-                        'short ${i.shortMl.toStringAsFixed(2)} mL '
-                        '${i.name}  (need '
-                        '${i.neededMl.toStringAsFixed(2)}, have '
+                        'short ${i.shortMl.toStringAsFixed(2)} mL ${i.name}  '
+                        '(need ${i.neededMl.toStringAsFixed(2)}, have '
                         '${i.haveMl.toStringAsFixed(2)})',
                         style: TextStyle(
                           color: theme.colorScheme.onErrorContainer,
@@ -460,17 +479,33 @@ class _CalculatorPageState extends State<CalculatorPage> {
               icon: const Icon(Icons.scale),
               label: const Text('Log as mixed (skip weighing)'),
             ),
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              onPressed: _flavors.isEmpty ? null : _saveRecipeDialog,
-              icon: const Icon(Icons.bookmark_add_outlined),
-              label: const Text('Save as recipe'),
+            const Divider(height: 24),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                if (loaded != null)
+                  FilledButton.tonalIcon(
+                    onPressed: () => _updateLoadedRecipe(loaded),
+                    icon: const Icon(Icons.save_outlined),
+                    label: Text('Update "${loaded.name}"'),
+                  ),
+                OutlinedButton.icon(
+                  onPressed: _flavors.isEmpty ? null : _saveAsNewRecipe,
+                  icon: const Icon(Icons.bookmark_add_outlined),
+                  label: Text(
+                    loaded != null ? 'Save as new recipe' : 'Save as recipe',
+                  ),
+                ),
+              ],
             ),
           ],
         ),
       ),
     );
   }
+
+  // ---------------------------------------------------------------- mixing
 
   Future<bool> _confirmShort(List<StockIssue> issues) async {
     if (issues.isEmpty) return true;
@@ -479,9 +514,9 @@ class _CalculatorPageState extends State<CalculatorPage> {
       builder: (context) => AlertDialog(
         title: const Text('Mix anyway?'),
         content: Text(
-          'You are short on ${issues.length} ingredient(s). '
-          'Logging will deduct what you have and floor those at zero. '
-          'You can undo from the History tab.',
+          'You are short on ${issues.length} ingredient(s). Logging will '
+          'deduct what you have and floor those at zero. You can undo from '
+          'the History tab.',
         ),
         actions: [
           TextButton(
@@ -502,8 +537,8 @@ class _CalculatorPageState extends State<CalculatorPage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          'Logged "${log.label}" — '
-          '${log.totalGrams.toStringAsFixed(2)} g, inventory deducted.',
+          'Logged "${log.label}" — ${log.totalGrams.toStringAsFixed(2)} g, '
+          'inventory deducted.',
         ),
         duration: const Duration(seconds: 8),
         action: SnackBarAction(
@@ -543,13 +578,53 @@ class _CalculatorPageState extends State<CalculatorPage> {
     _logged(log);
   }
 
-  Future<void> _saveRecipeDialog() async {
-    final name = TextEditingController(text: _label);
+  // --------------------------------------------------------------- recipes
+
+  List<RecipeFlavor> _currentFlavors() => [
+    for (final e in _flavors)
+      if (s.byId(e.ingredientId) != null && _val(e.percent) > 0)
+        RecipeFlavor(
+          ingredientId: e.ingredientId!,
+          name: s.byId(e.ingredientId)!.displayName,
+          percent: _val(e.percent),
+        ),
+  ];
+
+  Future<void> _editLoadedRecipe(Recipe loaded) async {
+    final saved = await Navigator.of(context).push<Recipe>(
+      MaterialPageRoute(
+        builder: (_) => RecipeEditorPage(state: s, existing: loaded),
+      ),
+    );
+    if (saved == null || !mounted) return;
+    _applyRecipe(saved); // pull the edits back into the calculator
+  }
+
+  void _updateLoadedRecipe(Recipe loaded) {
+    s.updateRecipe(
+      Recipe(
+        id: loaded.id,
+        name: loaded.name,
+        notes: loaded.notes,
+        batchMl: _val(_batch),
+        targetNic: _val(_nic),
+        targetVgPercent: _val(_vg),
+        flavors: _currentFlavors(),
+      ),
+    );
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('Updated "${loaded.name}".')));
+  }
+
+  Future<void> _saveAsNewRecipe() async {
+    final name = TextEditingController(
+      text: _loadedRecipe != null ? '$_label (variant)' : _label,
+    );
     final notes = TextEditingController();
     final saved = await showDialog<Recipe>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Save recipe'),
+        title: const Text('Save as recipe'),
         content: SizedBox(
           width: 360,
           child: Column(
@@ -592,15 +667,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
                 batchMl: _val(_batch),
                 targetNic: _val(_nic),
                 targetVgPercent: _val(_vg),
-                flavors: [
-                  for (final e in _flavors)
-                    if (s.byId(e.ingredientId) != null && _val(e.percent) > 0)
-                      RecipeFlavor(
-                        ingredientId: e.ingredientId!,
-                        name: s.byId(e.ingredientId)!.displayName,
-                        percent: _val(e.percent),
-                      ),
-                ],
+                flavors: _currentFlavors(),
               ),
             ),
             child: const Text('Save'),
@@ -610,13 +677,16 @@ class _CalculatorPageState extends State<CalculatorPage> {
     );
     name.dispose();
     notes.dispose();
-    if (saved != null) {
-      s.addRecipe(saved);
-      if (!mounted) return;
-      setState(() => _label = saved.name);
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Saved "${saved.name}".')));
-    }
+    if (saved == null) return;
+
+    s.addRecipe(saved);
+    if (!mounted) return;
+    setState(() {
+      _label = saved.name;
+      _loadedRecipeId = saved.id;
+    });
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('Saved "${saved.name}".')));
   }
 
   TableRow _row(String a, String b, String c, String d, {bool header = false}) {

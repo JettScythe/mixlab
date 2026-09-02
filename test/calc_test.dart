@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mixlab/models.dart';
 import 'package:mixlab/state.dart';
@@ -532,6 +533,13 @@ void main() {
   });
 
   group('load resilience (bug 1)', () {
+    late DebugPrintCallback original;
+    setUp(() {
+      original = debugPrint;
+      debugPrint = (String? message, {int? wrapWidth}) {};
+    });
+
+    tearDown(() => debugPrint = original);
     test('corrupt JSON reports an error instead of hanging', () async {
       SharedPreferences.setMockInitialValues({
         'schema_version': 3,
@@ -803,6 +811,119 @@ void main() {
       );
       expect(s.byId('z')!.brand, 'CAP');
       expect(s.byId('z')!.name, 'Sweet Cream');
+    });
+  });
+
+  group('recipe editing', () {
+    Recipe sample({String id = 'r1', String name = 'Sample'}) => Recipe(
+      id: id,
+      name: name,
+      notes: 'note',
+      batchMl: 30,
+      targetNic: 3,
+      targetVgPercent: 70,
+      flavors: [RecipeFlavor(ingredientId: 'a', name: 'a', percent: 5)],
+    );
+
+    test('updateRecipe replaces in place, keeping position', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      s.recipes.addAll([
+        sample(id: 'r0', name: 'First'),
+        sample(id: 'r1', name: 'Second'),
+        sample(id: 'r2', name: 'Third'),
+      ]);
+
+      s.updateRecipe(
+        Recipe(id: 'r1', name: 'Renamed', batchMl: 60, targetNic: 6),
+      );
+
+      expect(s.recipes.length, 3);
+      expect(s.recipes[1].id, 'r1'); // position preserved
+      expect(s.recipes[1].name, 'Renamed');
+      expect(s.recipes[1].batchMl, 60);
+      expect(s.recipes[0].name, 'First'); // neighbours untouched
+      expect(s.recipes[2].name, 'Third');
+    });
+
+    test('updateRecipe appends when the id is unknown', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      s.updateRecipe(sample(id: 'ghost'));
+      expect(s.recipes.single.id, 'ghost');
+    });
+
+    test('duplicateRecipe deep-copies and inserts after the original', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      s.recipes.addAll([sample(id: 'r0'), sample(id: 'r1', name: 'Tail')]);
+
+      final copy = s.duplicateRecipe('r0')!;
+      expect(s.recipes.length, 3);
+      expect(s.recipes[1].id, copy.id);
+      expect(copy.id, isNot('r0'));
+      expect(copy.name, 'Sample (copy)');
+      expect(s.recipes[2].name, 'Tail'); // inserted, not appended
+
+      // Flavor lists must not be shared between original and copy.
+      expect(identical(copy.flavors, s.recipes[0].flavors), isFalse);
+      expect(copy.flavors.single.percent, 5);
+    });
+
+    test('duplicateRecipe returns null for a missing id', () {
+      SharedPreferences.setMockInitialValues({});
+      expect(AppState(autoLoad: false).duplicateRecipe('nope'), isNull);
+    });
+
+    test('removeRecipe reports its index and restore puts it back', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      s.recipes.addAll([sample(id: 'r0'), sample(id: 'r1'), sample(id: 'r2')]);
+
+      final removed = s.removeRecipe('r1')!;
+      expect(removed.$2, 1);
+      expect(s.recipes.map((e) => e.id), ['r0', 'r2']);
+
+      s.restoreRecipe(removed.$1, removed.$2);
+      expect(s.recipes.map((e) => e.id), ['r0', 'r1', 'r2']);
+    });
+
+    test('recipeById and recipeByName look up correctly', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      s.recipes.add(sample(id: 'r1', name: 'Mustard Milk'));
+
+      expect(s.recipeById('r1')?.name, 'Mustard Milk');
+      expect(s.recipeById('nope'), isNull);
+      expect(s.recipeById(null), isNull);
+      expect(s.recipeByName('  mustard milk ')?.id, 'r1');
+      expect(s.recipeByName('Mustard Milk', exceptId: 'r1'), isNull);
+      expect(s.recipeByName(''), isNull);
+    });
+
+    test('an edited recipe survives a JSON round-trip', () {
+      final edited = Recipe(
+        id: 'r1',
+        name: 'Edited',
+        notes: 'reworked',
+        batchMl: 120,
+        targetNic: 1.5,
+        targetVgPercent: 80,
+        flavors: [
+          RecipeFlavor(ingredientId: 'a', name: 'TFA A', percent: 2.5),
+          RecipeFlavor(ingredientId: 'b', name: 'CAP B', percent: 1),
+        ],
+      );
+      final back = Recipe.fromJson(
+        jsonDecode(jsonEncode(edited.toJson())) as Map<String, dynamic>,
+      );
+      expect(back.name, 'Edited');
+      expect(back.batchMl, 120);
+      expect(back.targetNic, 1.5);
+      expect(back.flavors.length, 2);
+      expect(back.totalFlavorPercent, 3.5);
+      // Flavor order is meaningful now that rows are reorderable.
+      expect(back.flavors.first.name, 'TFA A');
     });
   });
 }
