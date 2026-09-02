@@ -107,3 +107,15 @@ jobs:
             artifacts/mixlab-linux/mixlab-linux.tar.gz
             artifacts/mixlab-windows.zip
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          name: ${{ github.ref_name }}
+          body: |
+            **Pre-release — unsigned builds.**
+
+            macOS: unzip, then run
+            `xattr -dr com.apple.quarantine mixlab.app` before first launch.
+            Windows: SmartScreen will warn — "More info" then "Run anyway".
+            Linux: `tar -xzf mixlab-linux.tar.gz && ./bundle/mixlab`
+
+            Data is stored per-user and survives upgrades within schema v3.
+            Export a backup from Settings before trying a new build.
