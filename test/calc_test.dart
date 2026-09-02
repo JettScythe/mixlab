@@ -926,4 +926,333 @@ void main() {
       expect(back.flavors.first.name, 'TFA A');
     });
   });
+
+  group('ratings and tasting notes', () {
+    MixResult simpleMix(AppState s, Ingredient f) => calculateMix(
+      amountMl: 100,
+      targetNic: 0,
+      targetVgPercent: 50,
+      settings: s.settings,
+      flavors: [(f, 5)],
+    );
+
+    test('a new log starts unrated', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      final f = flavor('a');
+      s.ingredients.add(f);
+      final log = s.logMix(simpleMix(s, f));
+      expect(log.rating, isNull);
+      expect(log.tastingNotes, '');
+      expect(log.hasFeedback, isFalse);
+      expect(log.ratedAt, isNull);
+      expect(log.steepDaysAtRating, isNull);
+    });
+
+    test('rateMix sets rating, notes and a timestamp', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      final f = flavor('a');
+      s.ingredients.add(f);
+      final log = s.logMix(simpleMix(s, f));
+
+      expect(s.rateMix(log.id, rating: 4, notes: 'needs a week'), isTrue);
+      final updated = s.mixLog.single;
+      expect(updated.id, log.id); // same entry, replaced in place
+      expect(updated.rating, 4);
+      expect(updated.tastingNotes, 'needs a week');
+      expect(updated.hasFeedback, isTrue);
+      expect(updated.ratedAt, isNotNull);
+      expect(updated.steepDaysAtRating, 0);
+      expect(s.ratedMixCount, 1);
+    });
+
+    test('clearRating removes the rating but keeps the notes', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      final f = flavor('a');
+      s.ingredients.add(f);
+      final log = s.logMix(simpleMix(s, f));
+      s.rateMix(log.id, rating: 5, notes: 'great');
+
+      s.rateMix(log.id, clearRating: true);
+      expect(s.mixLog.single.rating, isNull);
+      expect(s.mixLog.single.tastingNotes, 'great');
+      expect(s.ratedMixCount, 0);
+    });
+
+    test('rateMix returns false for an unknown id', () {
+      SharedPreferences.setMockInitialValues({});
+      expect(AppState(autoLoad: false).rateMix('nope', rating: 3), isFalse);
+    });
+
+    test('rating and notes survive a JSON round-trip', () {
+      final l = MixLog(
+        id: 'l1',
+        mixedAt: DateTime(2026, 1, 1),
+        label: 'Test',
+        recipeId: 'r1',
+        batchMl: 30,
+        targetNic: 3,
+        targetVgPercent: 70,
+        totalGrams: 33.5,
+        totalCost: 1.25,
+        lines: const [],
+        rating: 4,
+        tastingNotes: 'peppery',
+        ratedAt: DateTime(2026, 1, 15),
+      );
+      final back = MixLog.fromJson(
+        jsonDecode(jsonEncode(l.toJson())) as Map<String, dynamic>,
+      );
+      expect(back.rating, 4);
+      expect(back.tastingNotes, 'peppery');
+      expect(back.recipeId, 'r1');
+      expect(back.steepDaysAtRating, 14);
+    });
+  });
+
+  group('recipe linkage', () {
+    test('logMix stores the recipe id and stats aggregate', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      final f = flavor('a', stock: 1000);
+      s.ingredients.add(f);
+      s.recipes.add(Recipe(id: 'r1', name: 'Mustard Milk'));
+
+      MixResult mix() => calculateMix(
+        amountMl: 30,
+        targetNic: 0,
+        targetVgPercent: 70,
+        settings: s.settings,
+        flavors: [(f, 8)],
+      );
+
+      final a = s.logMix(mix(), label: 'Mustard Milk', recipeId: 'r1');
+      final b = s.logMix(mix(), label: 'Mustard Milk', recipeId: 'r1');
+      s.logMix(mix(), label: 'Something else');
+
+      expect(a.recipeId, 'r1');
+      expect(s.mixCountForRecipe('r1'), 2);
+      expect(s.mixesForRecipe('r1').map((l) => l.id), [b.id, a.id]);
+      expect(s.lastMixedForRecipe('r1'), isNotNull);
+      expect(s.lastMixedForRecipe('nope'), isNull);
+
+      expect(s.averageRatingForRecipe('r1'), isNull); // none rated yet
+      s.rateMix(a.id, rating: 5);
+      s.rateMix(b.id, rating: 3);
+      expect(s.averageRatingForRecipe('r1'), 4.0);
+    });
+  });
+
+  group('remix', () {
+    test('reconstructs flavor percentages from what was mixed', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      final f1 = flavor('a', stock: 1000);
+      final f2 = flavor('b', stock: 1000);
+      s.ingredients.addAll([f1, f2]);
+
+      final r = calculateMix(
+        amountMl: 30,
+        targetNic: 0,
+        targetVgPercent: 70,
+        settings: s.settings,
+        flavors: [(f1, 8), (f2, 6)],
+      );
+      final log = s.logMix(r, label: 'Mustard Milk', targetVgPercent: 70);
+
+      final remix = s.recipeFromLog(log);
+      expect(remix.name, 'Mustard Milk');
+      expect(remix.batchMl, closeTo(30, 1e-9));
+      expect(remix.targetVgPercent, 70);
+      expect(remix.flavors.length, 2); // base lines excluded
+      expect(remix.flavors[0].percent, closeTo(8, 1e-9));
+      expect(remix.flavors[1].percent, closeTo(6, 1e-9));
+      expect(remix.id.startsWith('remix:'), isTrue);
+    });
+
+    test('round-trips through calculateMix to the same volumes', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      final f = flavor('a', stock: 1000);
+      final n = nicBase();
+      s.ingredients.addAll([f, n]);
+
+      final original = calculateMix(
+        amountMl: 60,
+        targetNic: 3,
+        targetVgPercent: 70,
+        settings: s.settings,
+        nic: n,
+        flavors: [(f, 7.5)],
+      );
+      final log = s.logMix(
+        original,
+        label: 'X',
+        targetNic: 3,
+        targetVgPercent: 70,
+      );
+
+      final remix = s.recipeFromLog(log);
+      final rebuilt = calculateMix(
+        amountMl: remix.batchMl,
+        targetNic: remix.targetNic,
+        targetVgPercent: remix.targetVgPercent,
+        settings: s.settings,
+        nic: n,
+        flavors: [
+          for (final rf in remix.flavors)
+            (s.byId(rf.ingredientId)!, rf.percent),
+        ],
+      );
+      expect(rebuilt.totalMl, closeTo(original.totalMl, 1e-6));
+      expect(rebuilt.totalGrams, closeTo(original.totalGrams, 1e-6));
+      final origFlavor = original.lines.firstWhere(
+        (l) => l.ingredientId == 'a',
+      );
+      final newFlavor = rebuilt.lines.firstWhere((l) => l.ingredientId == 'a');
+      expect(newFlavor.ml, closeTo(origFlavor.ml, 1e-6));
+    });
+
+    test('deleted ingredients are dropped from the reconstruction', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      final f = flavor('a', stock: 1000);
+      s.ingredients.add(f);
+      final log = s.logMix(
+        calculateMix(
+          amountMl: 30,
+          targetNic: 0,
+          targetVgPercent: 70,
+          settings: s.settings,
+          flavors: [(f, 8)],
+        ),
+      );
+
+      s.removeIngredient('a');
+      expect(s.recipeFromLog(log).flavors, isEmpty);
+    });
+
+    test('roundPercent tidies division artifacts', () {
+      expect(roundPercent(7.999999999), 8.0);
+      expect(roundPercent(0.3333333), 0.33);
+      expect(roundPercent(12.5), 12.5);
+    });
+  });
+
+  group('schema v4 migration', () {
+    test('links old log entries to recipes by label', () async {
+      SharedPreferences.setMockInitialValues({
+        'schema_version': 3,
+        'ingredients_v1': jsonEncode(<Object>[]),
+        'recipes_v1': jsonEncode([
+          {'id': 'r1', 'name': 'Mustard Milk', 'flavors': <Object>[]},
+        ]),
+        'mixlog_v1': jsonEncode([
+          {
+            'id': 'l1',
+            'mixedAt': '2026-01-01T00:00:00.000',
+            'label': 'mustard milk', // different case on purpose
+            'lines': <Object>[],
+          },
+          {
+            'id': 'l2',
+            'mixedAt': '2026-01-02T00:00:00.000',
+            'label': 'One-off experiment',
+            'lines': <Object>[],
+          },
+        ]),
+      });
+
+      final s = AppState();
+      await waitReady(s);
+
+      expect(s.loadError, isNull);
+      final linked = s.mixLog.firstWhere((l) => l.id == 'l1');
+      final unlinked = s.mixLog.firstWhere((l) => l.id == 'l2');
+      expect(linked.recipeId, 'r1');
+      expect(unlinked.recipeId, isNull);
+      expect(s.mixCountForRecipe('r1'), 1);
+
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getInt('schema_version'), 4);
+    });
+
+    test('v3 backups import with the new fields defaulted', () async {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      await s.importJson(
+        jsonEncode({
+          'schema': 3,
+          'mixLog': [
+            {
+              'id': 'old',
+              'mixedAt': '2026-01-01T00:00:00.000',
+              'label': 'Legacy',
+              'lines': <Object>[],
+            },
+          ],
+        }),
+      );
+      final l = s.mixLog.single;
+      expect(l.rating, isNull);
+      expect(l.tastingNotes, '');
+      expect(l.recipeId, isNull);
+    });
+  });
+  group('recipe detail aggregates', () {
+    test('spend and volume sum only that recipe\'s mixes', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      final f = flavor('a', stock: 1000); // 0.10/mL
+      s.ingredients.add(f);
+      s.recipes.add(Recipe(id: 'r1', name: 'Target'));
+
+      MixResult mix(double ml) => calculateMix(
+        amountMl: ml,
+        targetNic: 0,
+        targetVgPercent: 70,
+        settings: s.settings,
+        flavors: [(f, 10)],
+      );
+
+      s.logMix(mix(30), label: 'Target', recipeId: 'r1');
+      s.logMix(mix(60), label: 'Target', recipeId: 'r1');
+      s.logMix(mix(100), label: 'Other'); // unlinked
+
+      final mine = s.mixesForRecipe('r1');
+      expect(mine.length, 2);
+      final volume = mine.fold(0.0, (a, l) => a + l.batchMl);
+      final spend = mine.fold(0.0, (a, l) => a + l.totalCost);
+      expect(volume, closeTo(90, 1e-9));
+      // 10% flavor at 0.10/mL = 0.01/mL of finished juice.
+      expect(spend, closeTo(0.9, 1e-9));
+    });
+
+    test('average rating ignores unrated mixes of the same recipe', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      final f = flavor('a', stock: 1000);
+      s.ingredients.add(f);
+      s.recipes.add(Recipe(id: 'r1', name: 'R'));
+
+      MixResult mix() => calculateMix(
+        amountMl: 30,
+        targetNic: 0,
+        targetVgPercent: 70,
+        settings: s.settings,
+        flavors: [(f, 5)],
+      );
+
+      final a = s.logMix(mix(), recipeId: 'r1');
+      final b = s.logMix(mix(), recipeId: 'r1');
+      s.logMix(mix(), recipeId: 'r1'); // never rated
+
+      s.rateMix(a.id, rating: 5);
+      s.rateMix(b.id, rating: 2);
+      expect(s.averageRatingForRecipe('r1'), 3.5);
+      expect(s.mixCountForRecipe('r1'), 3);
+    });
+  });
 }

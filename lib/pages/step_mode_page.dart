@@ -12,11 +12,13 @@ class StepModePage extends StatefulWidget {
     required this.label,
     required this.targetNic,
     required this.targetVgPercent,
+    this.recipeId,
   });
 
   final AppState state;
   final MixResult result;
   final String label;
+  final String? recipeId;
   final double targetNic;
   final double targetVgPercent;
 
@@ -216,6 +218,7 @@ class _StepModePageState extends State<StepModePage> {
     final log = s.logMix(
       adjusted,
       label: widget.label,
+      recipeId: widget.recipeId,
       targetNic: widget.targetNic,
       targetVgPercent: widget.targetVgPercent,
       weighed: true,

@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 
+import '../widgets/star_rating.dart';
 import '../models.dart';
 import '../state.dart';
 import 'recipe_editor_page.dart';
+import 'recipe_detail_page.dart';
 
 enum _Sort { name, flavorCount, flavorPercent, nicotine }
 
@@ -33,6 +35,25 @@ class _RecipesPageState extends State<RecipesPage> {
   void dispose() {
     _search.dispose();
     super.dispose();
+  }
+
+  void _openDetail(Recipe r) => Navigator.of(context).push(
+    MaterialPageRoute<void>(
+      builder: (_) =>
+          RecipeDetailPage(state: state, recipeId: r.id, onMix: widget.onMix),
+    ),
+  );
+
+  static String _ago(DateTime d) {
+    final days = DateTime.now().difference(d).inDays;
+    return switch (days) {
+      <= 0 => 'today',
+      1 => 'yesterday',
+      < 30 => '$days days ago',
+      < 60 => 'a month ago',
+      < 365 => '${(days / 30).round()} months ago',
+      _ => '${(days / 365).round()} year(s) ago',
+    };
   }
 
   List<Recipe> get _visible {
@@ -151,6 +172,13 @@ class _RecipesPageState extends State<RecipesPage> {
 
   Widget _card(BuildContext context, Recipe r) {
     final theme = Theme.of(context);
+    final mixCount = state.mixCountForRecipe(r.id);
+    final lastMixed = state.lastMixedForRecipe(r.id);
+    final avgRating = state.averageRatingForRecipe(r.id);
+    final ratedCount = state
+        .mixesForRecipe(r.id)
+        .where((l) => l.rating != null)
+        .length;
     final missing = r.flavors
         .where(
           (f) =>
@@ -160,122 +188,148 @@ class _RecipesPageState extends State<RecipesPage> {
         .length;
 
     return Card(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 12, 8, 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => _openDetail(r),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 8, 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      r.name,
+                      style: theme.textTheme.titleMedium,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (avgRating != null)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: StarSummary(average: avgRating, count: ratedCount),
+                    ),
+                  Text(
+                    '${r.batchMl.toStringAsFixed(0)} mL  •  '
+                    '${r.targetNic.toStringAsFixed(1)} mg  •  '
+                    '${r.targetVgPercent.toStringAsFixed(0)}% VG  •  '
+                    '${r.totalFlavorPercent.toStringAsFixed(1)}% flavor',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  PopupMenuButton<String>(
+                    tooltip: 'More',
+                    onSelected: (v) {
+                      switch (v) {
+                        case 'edit':
+                          _openEditor(r);
+                        case 'duplicate':
+                          _duplicate(r);
+                        case 'delete':
+                          _confirmDelete(r);
+                      }
+                    },
+                    itemBuilder: (context) => [
+                      const PopupMenuItem(
+                        value: 'edit',
+                        child: ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(Icons.edit_outlined),
+                          title: Text('Edit'),
+                        ),
+                      ),
+                      const PopupMenuItem(
+                        value: 'duplicate',
+                        child: ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(Icons.copy_outlined),
+                          title: Text('Duplicate'),
+                        ),
+                      ),
+                      const PopupMenuItem(
+                        value: 'delete',
+                        child: ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(Icons.delete_outline),
+                          title: Text('Delete'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              if (mixCount > 0)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
                   child: Text(
-                    r.name,
-                    style: theme.textTheme.titleMedium,
-                    overflow: TextOverflow.ellipsis,
+                    'Mixed $mixCount time${mixCount == 1 ? '' : 's'}'
+                    '${lastMixed != null ? ' • last ${_ago(lastMixed)}' : ''}',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.outline,
+                    ),
                   ),
                 ),
-                Text(
-                  '${r.batchMl.toStringAsFixed(0)} mL  •  '
-                  '${r.targetNic.toStringAsFixed(1)} mg  •  '
-                  '${r.targetVgPercent.toStringAsFixed(0)}% VG  •  '
-                  '${r.totalFlavorPercent.toStringAsFixed(1)}% flavor',
-                  style: theme.textTheme.bodySmall,
+              if (r.notes.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6, right: 8),
+                  child: Text(r.notes, style: theme.textTheme.bodySmall),
                 ),
-                PopupMenuButton<String>(
-                  tooltip: 'More',
-                  onSelected: (v) {
-                    switch (v) {
-                      case 'edit':
-                        _openEditor(r);
-                      case 'duplicate':
-                        _duplicate(r);
-                      case 'delete':
-                        _confirmDelete(r);
-                    }
+              for (final f in r.flavors)
+                Builder(
+                  builder: (context) {
+                    final ing =
+                        state.byId(f.ingredientId) ??
+                        state.flavorByName(f.name);
+                    final gone = ing == null;
+                    return Text(
+                      '${f.percent.toStringAsFixed(1)}%   '
+                      '${ing?.displayName ?? f.name}'
+                      '${gone ? '  (not in inventory)' : ''}',
+                      style: gone
+                          ? TextStyle(color: theme.colorScheme.error)
+                          : null,
+                    );
                   },
-                  itemBuilder: (context) => [
-                    const PopupMenuItem(
-                      value: 'edit',
-                      child: ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(Icons.edit_outlined),
-                        title: Text('Edit'),
-                      ),
-                    ),
-                    const PopupMenuItem(
-                      value: 'duplicate',
-                      child: ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(Icons.copy_outlined),
-                        title: Text('Duplicate'),
-                      ),
-                    ),
-                    const PopupMenuItem(
-                      value: 'delete',
-                      child: ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(Icons.delete_outline),
-                        title: Text('Delete'),
-                      ),
-                    ),
-                  ],
                 ),
-              ],
-            ),
-            if (r.notes.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6, right: 8),
-                child: Text(r.notes, style: theme.textTheme.bodySmall),
+              if (missing > 0)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    '$missing flavor(s) missing — they will be skipped when '
+                    'loaded.',
+                    style: TextStyle(color: theme.colorScheme.error),
+                  ),
+                ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  FilledButton.tonalIcon(
+                    onPressed: () {
+                      state.requestLoadRecipe(r);
+                      widget.onMix();
+                    },
+                    icon: const Icon(Icons.science),
+                    label: const Text('Load into calculator'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: () => _openDetail(r),
+                    icon: const Icon(Icons.insights_outlined),
+                    label: const Text('Details'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: () => _openEditor(r),
+                    icon: const Icon(Icons.edit_outlined),
+                    label: const Text('Edit'),
+                  ),
+                ],
               ),
-            for (final f in r.flavors)
-              Builder(
-                builder: (context) {
-                  final ing =
-                      state.byId(f.ingredientId) ?? state.flavorByName(f.name);
-                  final gone = ing == null;
-                  return Text(
-                    '${f.percent.toStringAsFixed(1)}%   '
-                    '${ing?.displayName ?? f.name}'
-                    '${gone ? '  (not in inventory)' : ''}',
-                    style: gone
-                        ? TextStyle(color: theme.colorScheme.error)
-                        : null,
-                  );
-                },
-              ),
-            if (missing > 0)
-              Padding(
-                padding: const EdgeInsets.only(top: 6),
-                child: Text(
-                  '$missing flavor(s) missing — they will be skipped when '
-                  'loaded.',
-                  style: TextStyle(color: theme.colorScheme.error),
-                ),
-              ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                FilledButton.tonalIcon(
-                  onPressed: () {
-                    state.requestLoadRecipe(r);
-                    widget.onMix();
-                  },
-                  icon: const Icon(Icons.science),
-                  label: const Text('Load into calculator'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: () => _openEditor(r),
-                  icon: const Icon(Icons.edit_outlined),
-                  label: const Text('Edit'),
-                ),
-              ],
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

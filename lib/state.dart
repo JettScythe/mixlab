@@ -23,7 +23,7 @@ class AppState extends ChangeNotifier {
   static const _kRecipes = 'recipes_v1';
   static const _kMixLog = 'mixlog_v1';
   static const _kPurchases = 'purchases_v1';
-  static const currentSchema = 3;
+  static const currentSchema = 4;
 
   static const _allKeys = [
     _kSchema,
@@ -173,7 +173,38 @@ class AppState extends ChangeNotifier {
       // All are additive with safe defaults, so no transform is needed.
       v = 3;
     }
-
+    if (v < 4) {
+      // v4 adds recipeId, rating and tasting notes to mix logs. The new
+      // fields default safely, but old entries can often be linked to a
+      // recipe by matching the label they were mixed under.
+      final rawLog = prefs.getString(_kMixLog);
+      final rawRec = prefs.getString(_kRecipes);
+      if (rawLog != null && rawRec != null) {
+        final byName = <String, String>{};
+        for (final r
+            in (jsonDecode(rawRec) as List).cast<Map<String, dynamic>>()) {
+          final n = (r['name'] as String? ?? '').trim().toLowerCase();
+          if (n.isNotEmpty) byName.putIfAbsent(n, () => r['id'] as String);
+        }
+        final logs = (jsonDecode(rawLog) as List)
+            .cast<Map<String, dynamic>>()
+            .toList();
+        var linked = 0;
+        for (final l in logs) {
+          if (l['recipeId'] != null) continue;
+          final id = byName[(l['label'] as String? ?? '').trim().toLowerCase()];
+          if (id != null) {
+            l['recipeId'] = id;
+            linked++;
+          }
+        }
+        if (linked > 0) {
+          await prefs.setString(_kMixLog, jsonEncode(logs));
+          debugPrint('Linked $linked mix log entries to recipes (v4).');
+        }
+      }
+      v = 4;
+    }
     await prefs.setInt(_kSchema, v);
   }
 
@@ -490,6 +521,68 @@ class AppState extends ChangeNotifier {
     return null;
   }
 
+  List<MixLog> mixesForRecipe(String recipeId) => [
+    for (final l in mixLog)
+      if (l.recipeId == recipeId) l,
+  ];
+
+  int mixCountForRecipe(String recipeId) => mixesForRecipe(recipeId).length;
+
+  /// Most recent mix of a recipe, or null if never mixed.
+  DateTime? lastMixedForRecipe(String recipeId) {
+    DateTime? best;
+    for (final l in mixLog) {
+      if (l.recipeId != recipeId) continue;
+      if (best == null || l.mixedAt.isAfter(best)) best = l.mixedAt;
+    }
+    return best;
+  }
+
+  /// Mean rating across rated mixes of a recipe, or null if none are rated.
+  double? averageRatingForRecipe(String recipeId) {
+    var sum = 0, n = 0;
+    for (final l in mixLog) {
+      if (l.recipeId != recipeId || l.rating == null) continue;
+      sum += l.rating!;
+      n++;
+    }
+    return n == 0 ? null : sum / n;
+  }
+
+  int get ratedMixCount => mixLog.where((l) => l.rating != null).length;
+
+  /// Rebuilds a recipe from what was actually mixed, so a log entry can be
+  /// pushed back through the calculator. Flavor percentages are derived from
+  /// the volumes requested at mix time, not from the current recipe — a
+  /// remix reproduces that bottle even if the recipe has since changed.
+  ///
+  /// The returned recipe carries a synthetic id, so the calculator treats it
+  /// as unsaved rather than offering to overwrite anything.
+  Recipe recipeFromLog(MixLog l) {
+    final flavors = <RecipeFlavor>[];
+    for (final line in l.lines) {
+      final ing = byId(line.ingredientId);
+      if (ing == null || ing.kind != IngredientKind.flavor) continue;
+      if (line.requestedMl <= 0 || l.batchMl <= 0) continue;
+      flavors.add(
+        RecipeFlavor(
+          ingredientId: ing.id,
+          name: ing.displayName,
+          percent: roundPercent(line.requestedMl / l.batchMl * 100),
+        ),
+      );
+    }
+    return Recipe(
+      id: 'remix:${l.id}',
+      name: l.label,
+      notes: l.tastingNotes,
+      batchMl: l.batchMl,
+      targetNic: l.targetNic,
+      targetVgPercent: l.targetVgPercent,
+      flavors: flavors,
+    );
+  }
+
   Ingredient? flavorByName(String query) {
     final q = query.trim().toLowerCase();
     if (q.isEmpty) return null;
@@ -708,9 +801,12 @@ class AppState extends ChangeNotifier {
 
   /// Records a mix, deducts stock, and returns the log entry.
   /// Achieved nicotine and VG% are recomputed from the real amounts.
+  /// Records a mix, deducts stock, and returns the log entry.
+  /// Achieved nicotine and VG% are recomputed from the real amounts.
   MixLog logMix(
     MixResult r, {
     String label = '',
+    String? recipeId,
     double targetNic = 0,
     double targetVgPercent = 0,
     bool weighed = false,
@@ -740,6 +836,7 @@ class AppState extends ChangeNotifier {
       id: newId(),
       mixedAt: DateTime.now(),
       label: label.trim().isEmpty ? 'Unnamed mix' : label.trim(),
+      recipeId: recipeId,
       batchMl: r.totalMl,
       targetNic: targetNic,
       targetVgPercent: targetVgPercent,
@@ -754,6 +851,27 @@ class AppState extends ChangeNotifier {
     notifyListeners();
     _save();
     return log;
+  }
+
+  /// Sets or clears the rating and tasting notes on a logged mix.
+  /// Stamps [ratedAt] so the steep time at tasting is recoverable.
+  bool rateMix(
+    String logId, {
+    int? rating,
+    bool clearRating = false,
+    String? notes,
+  }) {
+    final i = mixLog.indexWhere((e) => e.id == logId);
+    if (i < 0) return false;
+    mixLog[i] = mixLog[i].copyWith(
+      rating: rating,
+      clearRating: clearRating,
+      tastingNotes: notes,
+      ratedAt: DateTime.now(),
+    );
+    notifyListeners();
+    _save();
+    return true;
   }
 
   bool undoMix(String logId) {

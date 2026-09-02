@@ -47,6 +47,10 @@ double clampd(double v, double lo, double hi) =>
 double roundTo(double v, double step) =>
     step <= 0 ? v : (v / step).round() * step;
 
+/// Rounds a percentage to 2 decimals, so reconstructed recipes don't show
+/// 7.999999999 after a division round-trip.
+double roundPercent(double v) => (v * 100).round() / 100;
+
 /// Locale-tolerant, non-negative number parsing.
 double? parseNum(String s) {
   final t = s.trim().replaceAll(',', '.');
@@ -573,14 +577,23 @@ class MixLog {
     required this.totalGrams,
     required this.totalCost,
     required this.lines,
+    this.recipeId,
     this.actualNic = 0,
     this.actualVgPercent = 0,
     this.weighed = false,
+    this.rating,
+    this.tastingNotes = '',
+    this.ratedAt,
   });
 
   final String id;
   final DateTime mixedAt;
   final String label;
+
+  /// Recipe this was mixed from, when it came from one. Null for ad-hoc
+  /// mixes, and left dangling if the recipe is later deleted.
+  final String? recipeId;
+
   final double batchMl;
   final double targetNic;
   final double targetVgPercent;
@@ -594,14 +607,52 @@ class MixLog {
   final List<MixLogLine> lines;
   final bool weighed;
 
+  /// 1-5, or null if never rated.
+  final int? rating;
+  final String tastingNotes;
+  final DateTime? ratedAt;
+
   int get daysSteeping => DateTime.now().difference(mixedAt).inDays;
 
   bool get nicDrifted => (actualNic - targetNic).abs() > 0.05;
+
+  bool get hasFeedback => rating != null || tastingNotes.isNotEmpty;
+
+  /// Days between mixing and the tasting note, i.e. how long it steeped
+  /// before you judged it.
+  int? get steepDaysAtRating => ratedAt?.difference(mixedAt).inDays;
+
+  MixLog copyWith({
+    int? rating,
+    bool clearRating = false,
+    String? tastingNotes,
+    DateTime? ratedAt,
+    String? recipeId,
+    bool clearRecipeId = false,
+  }) => MixLog(
+    id: id,
+    mixedAt: mixedAt,
+    label: label,
+    recipeId: clearRecipeId ? null : (recipeId ?? this.recipeId),
+    batchMl: batchMl,
+    targetNic: targetNic,
+    targetVgPercent: targetVgPercent,
+    actualNic: actualNic,
+    actualVgPercent: actualVgPercent,
+    totalGrams: totalGrams,
+    totalCost: totalCost,
+    lines: lines,
+    weighed: weighed,
+    rating: clearRating ? null : (rating ?? this.rating),
+    tastingNotes: tastingNotes ?? this.tastingNotes,
+    ratedAt: ratedAt ?? this.ratedAt,
+  );
 
   Map<String, dynamic> toJson() => {
     'id': id,
     'mixedAt': mixedAt.toIso8601String(),
     'label': label,
+    'recipeId': recipeId,
     'batchMl': batchMl,
     'targetNic': targetNic,
     'targetVgPercent': targetVgPercent,
@@ -610,6 +661,9 @@ class MixLog {
     'totalGrams': totalGrams,
     'totalCost': totalCost,
     'weighed': weighed,
+    'rating': rating,
+    'tastingNotes': tastingNotes,
+    'ratedAt': ratedAt?.toIso8601String(),
     'lines': lines.map((l) => l.toJson()).toList(),
   };
 
@@ -619,6 +673,7 @@ class MixLog {
         DateTime.tryParse(j['mixedAt'] as String? ?? '') ??
         DateTime.fromMillisecondsSinceEpoch(0),
     label: j['label'] as String? ?? '',
+    recipeId: j['recipeId'] as String?,
     batchMl: (j['batchMl'] as num?)?.toDouble() ?? 0,
     targetNic: (j['targetNic'] as num?)?.toDouble() ?? 0,
     targetVgPercent: (j['targetVgPercent'] as num?)?.toDouble() ?? 0,
@@ -634,6 +689,9 @@ class MixLog {
     totalGrams: (j['totalGrams'] as num?)?.toDouble() ?? 0,
     totalCost: (j['totalCost'] as num?)?.toDouble() ?? 0,
     weighed: j['weighed'] as bool? ?? false,
+    rating: (j['rating'] as num?)?.toInt(),
+    tastingNotes: j['tastingNotes'] as String? ?? '',
+    ratedAt: DateTime.tryParse(j['ratedAt'] as String? ?? ''),
     lines: [
       for (final l in (j['lines'] as List? ?? const []))
         MixLogLine.fromJson(l as Map<String, dynamic>),

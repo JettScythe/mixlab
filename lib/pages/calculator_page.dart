@@ -558,6 +558,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
           state: s,
           result: r,
           label: _label.isEmpty ? 'Unnamed mix' : _label,
+          recipeId: _loadedRecipeId,
           targetNic: _val(_nic),
           targetVgPercent: _val(_vg),
         ),
@@ -571,6 +572,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
     final log = s.logMix(
       r,
       label: _label,
+      recipeId: _loadedRecipeId,
       targetNic: _val(_nic),
       targetVgPercent: _val(_vg),
     );

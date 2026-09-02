@@ -137,7 +137,7 @@ class _HomeShellState extends State<HomeShell> {
           CalculatorPage(state: s),
           RecipesPage(state: s, onMix: () => _go(0)),
           InventoryPage(state: s),
-          HistoryPage(state: s),
+          HistoryPage(state: s, onMix: () => _go(0)),
           SettingsPage(state: s),
         ];
         return LayoutBuilder(
