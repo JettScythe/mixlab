@@ -8,7 +8,7 @@ Status: `v0.1.0-beta.1` — usable, but the schema is young and the builds
 are unsigned. Export a backup before upgrading.
 
 ## Why another one
-
+![Weigh-along mode](docs/screenshots/weigh-along.png)
 Most e-liquid calculators are volume-first tools with weights bolted on:
 they compute mL, then multiply by a density constant at the end. That
 falls apart in two places. A 100 mg/mL nicotine base in VG is roughly
@@ -124,19 +124,37 @@ and the two work fine together — build there, mix here.
 - Recovery screen if stored data ever fails to load, with a raw-data
   dump so nothing is lost
 
+
+## Screenshots
+
+| Calculator | Recipe editor |
+| --- | --- |
+| ![Calculator](docs/screenshots/calculator.png) | ![Recipe editor](docs/screenshots/recipe-editor.png) |
+
+| Inventory | Mix history |
+| --- | --- |
+| ![Inventory](docs/screenshots/inventory.png) | ![History](docs/screenshots/history.png) |
 ## Install
 
 Download from [Releases](../../releases). Builds are unsigned, so each
 platform will complain once.
 
-macOS:
+macOS: extract, then double-click `mixlab.app`. macOS will block it
+because the build is unsigned — open **System Settings → Privacy &
+Security**, scroll to the message about mixlab, and click **Open
+Anyway**. You only need to do this once.
 
 ```bash
 tar -xzf mixlab-macos.tar.gz
-xattr -dr com.apple.quarantine mixlab.app
 open mixlab.app
 ```
 
+On older macOS versions the block is a dead end with no override. In
+that case, clear the quarantine flag manually:
+
+```bash
+xattr -dr com.apple.quarantine mixlab.app
+```
 Windows: unzip, run `mixlab.exe`. SmartScreen shows a warning —
 "More info" then "Run anyway". Keep the whole folder together; the exe
 needs its sibling DLLs and `data/`.
