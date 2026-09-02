@@ -238,7 +238,8 @@ class _StepModePageState extends State<StepModePage> {
       canPop: false,
       onPopInvokedWithResult: (didPop, _) async {
         if (didPop) return;
-        if (await _confirmExit() && mounted) Navigator.pop(context);
+        final navigator = Navigator.of(context);
+        if (await _confirmExit()) navigator.pop();
       },
       child: Scaffold(
         appBar: AppBar(
@@ -493,8 +494,20 @@ class _StepModePageState extends State<StepModePage> {
     final target = _plan.plannedGrams(k);
     final actual = _actual[k];
     final complete = k < _i;
-    final off = actual != null && (actual - target).abs() > _res * 1.5;
     final tooSmall = _plan.roundsToZero(k);
+
+    String trailingText;
+    if (complete && actual != null) {
+      trailingText = _g(actual);
+    } else if (tooSmall) {
+      trailingText = _plan.exactGrams(k).toStringAsFixed(3);
+    } else {
+      trailingText = _g(target);
+    }
+
+    final off =
+        complete && actual != null && (actual - target).abs() > _res * 1.5;
+
     return ListTile(
       dense: true,
       leading: Icon(
@@ -529,16 +542,13 @@ class _StepModePageState extends State<StepModePage> {
             ),
         ],
       ),
-      subtitle: complete && off
+      subtitle: off
           ? Text(
-              'added ${_g(actual!)} g (target ${_g(target)} g)',
+              'added ${_g(actual)} g (target ${_g(target)} g)',
               style: TextStyle(color: theme.colorScheme.error),
             )
           : null,
-      trailing: Text(
-        '${tooSmall && !complete ? _plan.exactGrams(k).toStringAsFixed(3) : _g(complete ? actual! : target)} g',
-        style: theme.textTheme.titleMedium,
-      ),
+      trailing: Text('$trailingText g', style: theme.textTheme.titleMedium),
       onTap: complete ? () => _jumpTo(k) : null,
     );
   }

@@ -90,7 +90,7 @@ class IngredientPickerField extends StatelessWidget {
                 style: sel == null ? TextStyle(color: theme.hintColor) : null,
               ),
             ),
-            if (trailing != null) trailing!,
+            ?trailing,
           ],
         ),
       ),
