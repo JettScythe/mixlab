@@ -129,11 +129,11 @@ and the two work fine together — build there, mix here.
 
 | Calculator | Recipe editor |
 | --- | --- |
-| ![Calculator](docs/screenshots/calculator.png) | ![Recipe editor](docs/screenshots/recipe-editor.png) |
+| ![Calculator](docs/screenshots/calc-wide.png) | ![Recipe editor](docs/screenshots/recipe-edit.png) |
 
 | Inventory | Mix history |
 | --- | --- |
-| ![Inventory](docs/screenshots/inventory.png) | ![History](docs/screenshots/history.png) |
+| ![Inventory](docs/screenshots/ingredients.png) | ![History](docs/screenshots/history.png) |
 ## Install
 
 Download from [Releases](../../releases). Builds are unsigned, so each
