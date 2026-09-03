@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models.dart';
 import '../state.dart';
 import '../widgets/ingredient_picker.dart';
+import '../widgets/toast.dart';
 import 'recipe_editor_page.dart';
 import 'step_mode_page.dart';
 
@@ -14,9 +15,16 @@ class CalculatorPage extends StatefulWidget {
   State<CalculatorPage> createState() => _CalculatorPageState();
 }
 
-class _FlavorEntry {
+/// One percentage-based row. Holds its kind so the picker can filter and
+/// so additives and thinners can be excluded from the flavor total.
+class _ConcentrateEntry {
+  _ConcentrateEntry(this.kind, {this.ingredientId, String percent = ''})
+    : percent = TextEditingController(text: percent);
+
+  IngredientKind kind;
   String? ingredientId;
-  final TextEditingController percent = TextEditingController();
+  final TextEditingController percent;
+
   void dispose() => percent.dispose();
 }
 
@@ -24,28 +32,31 @@ class _CalculatorPageState extends State<CalculatorPage> {
   late final TextEditingController _batch;
   late final TextEditingController _nic;
   late final TextEditingController _vg;
+
   String? _nicId;
   String? _pgId;
   String? _vgId;
-  final List<_FlavorEntry> _flavors = [];
+
+  final List<_ConcentrateEntry> _rows = [];
+
   String _label = '';
   String? _loadedRecipeId;
   int _seenRecipeToken = 0;
+  late PercentMode _percentMode;
 
   AppState get s => widget.state;
 
   @override
   void initState() {
     super.initState();
-    _batch = TextEditingController(
-      text: s.settings.defaultBatchMl.toStringAsFixed(0),
-    );
+    final set = s.settings;
+    _batch = TextEditingController(text: set.defaultBatchMl.toStringAsFixed(0));
     _nic = TextEditingController(text: '3');
-    _vg = TextEditingController(
-      text: s.settings.defaultVgPercent.toStringAsFixed(0),
-    );
+    _vg = TextEditingController(text: set.defaultVgPercent.toStringAsFixed(0));
+    _percentMode = set.defaultPercentMode;
+
     for (final c in [_batch, _nic, _vg]) {
-      c.addListener(() => setState(() {}));
+      c.addListener(_rebuild);
     }
     _seenRecipeToken = s.recipeLoadToken;
     s.addListener(_onStateChanged);
@@ -57,11 +68,13 @@ class _CalculatorPageState extends State<CalculatorPage> {
     _batch.dispose();
     _nic.dispose();
     _vg.dispose();
-    for (final f in _flavors) {
-      f.dispose();
+    for (final r in _rows) {
+      r.dispose();
     }
     super.dispose();
   }
+
+  void _rebuild() => setState(() {});
 
   void _onStateChanged() {
     if (!mounted || s.recipeLoadToken == _seenRecipeToken) return;
@@ -70,13 +83,18 @@ class _CalculatorPageState extends State<CalculatorPage> {
     if (r != null) _applyRecipe(r);
   }
 
+  // ----------------------------------------------------------------- helpers
+
   double _val(TextEditingController c) => parseNum(c.text) ?? 0;
+
   bool _bad(TextEditingController c) =>
       c.text.trim().isNotEmpty && parseNum(c.text) == null;
 
   String _fmt(double v) =>
       v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toString();
 
+  /// The saved recipe currently loaded, if any. Remixed logs carry a
+  /// synthetic id that never resolves, so they correctly read as unsaved.
   Recipe? get _loadedRecipe => s.recipeById(_loadedRecipeId);
 
   void _applyRecipe(Recipe r) {
@@ -84,11 +102,14 @@ class _CalculatorPageState extends State<CalculatorPage> {
     _nic.text = _fmt(r.targetNic);
     _vg.text = _fmt(r.targetVgPercent);
     _label = r.name;
-    _loadedRecipeId = r.id;
-    for (final e in _flavors) {
+    _percentMode = r.percentMode;
+    _loadedRecipeId = r.id.startsWith('remix:') ? null : r.id;
+
+    for (final e in _rows) {
       e.dispose();
     }
-    _flavors.clear();
+    _rows.clear();
+
     var skipped = 0;
     for (final f in r.flavors) {
       final ing = s.byId(f.ingredientId) ?? s.flavorByName(f.name);
@@ -96,16 +117,20 @@ class _CalculatorPageState extends State<CalculatorPage> {
         skipped++;
         continue;
       }
-      final entry = _FlavorEntry()..ingredientId = ing.id;
-      entry.percent.text = _fmt(f.percent);
-      _flavors.add(entry);
+      _rows.add(
+        _ConcentrateEntry(
+          ing.kind,
+          ingredientId: ing.id,
+          percent: _fmt(f.percent),
+        )..percent.addListener(_rebuild),
+      );
     }
+
     setState(() {});
     if (skipped > 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('$skipped flavor(s) skipped — not found in inventory.'),
-        ),
+      showToast(
+        context,
+        '$skipped ingredient(s) skipped — not found in inventory.',
       );
     }
   }
@@ -119,16 +144,19 @@ class _CalculatorPageState extends State<CalculatorPage> {
       targetNic: _val(_nic),
       targetVgPercent: _val(_vg),
       settings: s.settings,
+      percentMode: _percentMode,
       nic: nic,
       pg: pg,
       vg: vg,
       flavors: [
-        for (final e in _flavors)
+        for (final e in _rows)
           if (s.byId(e.ingredientId) != null)
             (s.byId(e.ingredientId)!, _val(e.percent)),
       ],
     );
   }
+
+  // -------------------------------------------------------------------- view
 
   @override
   Widget build(BuildContext context) {
@@ -158,11 +186,12 @@ class _CalculatorPageState extends State<CalculatorPage> {
   }
 
   Widget _buildInputs(BuildContext context) {
-    final flavorTotal = _flavors.fold(0.0, (a, e) => a + _val(e.percent));
+    final theme = Theme.of(context);
     final nic = s.byId(_nicId) ?? s.firstOfKind(IngredientKind.nicotine);
     final pg = s.byId(_pgId) ?? s.firstOfKind(IngredientKind.pg);
     final vg = s.byId(_vgId) ?? s.firstOfKind(IngredientKind.vg);
     final loaded = _loadedRecipe;
+    final listedTotal = _rows.fold(0.0, (a, e) => a + _val(e.percent));
 
     return Card(
       child: Padding(
@@ -173,21 +202,20 @@ class _CalculatorPageState extends State<CalculatorPage> {
             Row(
               children: [
                 Expanded(
-                  child: Text(
-                    'Recipe',
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
+                  child: Text('Recipe', style: theme.textTheme.titleLarge),
                 ),
                 if (_label.isNotEmpty)
-                  Chip(
-                    avatar: loaded != null
-                        ? const Icon(Icons.menu_book, size: 16)
-                        : null,
-                    label: Text(_label),
-                    onDeleted: () => setState(() {
-                      _label = '';
-                      _loadedRecipeId = null;
-                    }),
+                  Flexible(
+                    child: Chip(
+                      avatar: loaded != null
+                          ? const Icon(Icons.menu_book, size: 16)
+                          : null,
+                      label: Text(_label, overflow: TextOverflow.ellipsis),
+                      onDeleted: () => setState(() {
+                        _label = '';
+                        _loadedRecipeId = null;
+                      }),
+                    ),
                   ),
                 if (loaded != null)
                   IconButton(
@@ -198,6 +226,8 @@ class _CalculatorPageState extends State<CalculatorPage> {
               ],
             ),
             const SizedBox(height: 12),
+
+            // Batch, nicotine, ratio.
             Row(
               children: [
                 Expanded(child: _numField(_batch, 'Batch size (mL)')),
@@ -208,11 +238,16 @@ class _CalculatorPageState extends State<CalculatorPage> {
               ],
             ),
             const SizedBox(height: 12),
+
+            // Base ingredients.
             IngredientPickerField(
               label: 'Nicotine base',
               items: s.ofKind(IngredientKind.nicotine),
               selectedId: nic?.id,
               settings: s.settings,
+              state: s,
+              createKind: IngredientKind.nicotine,
+              emptyHint: 'No nicotine bases yet',
               onSelected: (id) => setState(() => _nicId = id),
             ),
             const SizedBox(height: 8),
@@ -224,6 +259,9 @@ class _CalculatorPageState extends State<CalculatorPage> {
                     items: s.ofKind(IngredientKind.pg),
                     selectedId: pg?.id,
                     settings: s.settings,
+                    state: s,
+                    createKind: IngredientKind.pg,
+                    emptyHint: 'No PG in inventory',
                     onSelected: (id) => setState(() => _pgId = id),
                   ),
                 ),
@@ -234,28 +272,85 @@ class _CalculatorPageState extends State<CalculatorPage> {
                     items: s.ofKind(IngredientKind.vg),
                     selectedId: vg?.id,
                     settings: s.settings,
+                    state: s,
+                    createKind: IngredientKind.vg,
+                    emptyHint: 'No VG in inventory',
                     onSelected: (id) => setState(() => _vgId = id),
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 20),
+
+            // Percentage mode.
+            Text('Percentages are', style: theme.textTheme.titleSmall),
+            const SizedBox(height: 6),
+            SegmentedButton<PercentMode>(
+              segments: [
+                for (final m in PercentMode.values)
+                  ButtonSegment(value: m, label: Text(percentModeLabel(m))),
+              ],
+              selected: {_percentMode},
+              onSelectionChanged: (v) => setState(() => _percentMode = v.first),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(top: 4, bottom: 12),
+              child: Text(
+                percentModeHint(_percentMode),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.outline,
+                ),
+              ),
+            ),
+
+            // Concentrate rows.
             Row(
               children: [
-                Text(
-                  'Flavors  (${flavorTotal.toStringAsFixed(1)}%)',
-                  style: Theme.of(context).textTheme.titleMedium,
+                Expanded(
+                  child: Text(
+                    'Ingredients  (${listedTotal.toStringAsFixed(1)}% listed)',
+                    style: theme.textTheme.titleMedium,
+                  ),
                 ),
-                const Spacer(),
-                FilledButton.tonalIcon(
-                  onPressed: () => setState(() => _flavors.add(_FlavorEntry())),
-                  icon: const Icon(Icons.add),
-                  label: const Text('Add flavor'),
+                MenuAnchor(
+                  builder: (context, controller, child) =>
+                      FilledButton.tonalIcon(
+                        onPressed: () => controller.isOpen
+                            ? controller.close()
+                            : controller.open(),
+                        icon: const Icon(Icons.add),
+                        label: const Text('Add'),
+                      ),
+                  menuChildren: [
+                    for (final k in const [
+                      IngredientKind.flavor,
+                      IngredientKind.additive,
+                      IngredientKind.thinner,
+                    ])
+                      MenuItemButton(
+                        onPressed: () => setState(() {
+                          _rows.add(
+                            _ConcentrateEntry(k)..percent.addListener(_rebuild),
+                          );
+                        }),
+                        child: Text(kindLabel(k)),
+                      ),
+                  ],
                 ),
               ],
             ),
             const SizedBox(height: 8),
-            for (final e in _flavors) _flavorRow(e),
+            if (_rows.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                child: Center(
+                  child: Text(
+                    'No flavors yet — use Add above.',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+              ),
+            for (final e in _rows) _concentrateRow(e),
           ],
         ),
       ),
@@ -273,25 +368,82 @@ class _CalculatorPageState extends State<CalculatorPage> {
     ),
   );
 
-  Widget _flavorRow(_FlavorEntry e) {
+  Widget _concentrateRow(_ConcentrateEntry e) {
+    final theme = Theme.of(context);
     final ing = s.byId(e.ingredientId);
     final needMl = _val(_batch) * _val(e.percent) / 100;
     final short = ing != null && needMl > ing.stockMl + 1e-9;
     final dupe =
         e.ingredientId != null &&
-        _flavors.where((x) => x.ingredientId == e.ingredientId).length > 1;
+        _rows.where((x) => x.ingredientId == e.ingredientId).length > 1;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Row(
         children: [
+          // Kind badge, tappable to reclassify the row.
+          Padding(
+            padding: const EdgeInsets.only(right: 6),
+            child: MenuAnchor(
+              builder: (context, controller, child) => Tooltip(
+                message: '${kindLabel(e.kind)} — tap to change',
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(6),
+                  onTap: () => controller.isOpen
+                      ? controller.close()
+                      : controller.open(),
+                  child: Container(
+                    width: 34,
+                    height: 34,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(6),
+                      color: switch (e.kind) {
+                        IngredientKind.additive =>
+                          theme.colorScheme.tertiaryContainer,
+                        IngredientKind.thinner =>
+                          theme.colorScheme.secondaryContainer,
+                        _ => theme.colorScheme.surfaceContainerHighest,
+                      },
+                    ),
+                    child: Icon(switch (e.kind) {
+                      IngredientKind.additive => Icons.auto_awesome,
+                      IngredientKind.thinner => Icons.water_drop_outlined,
+                      _ => Icons.local_florist_outlined,
+                    }, size: 18),
+                  ),
+                ),
+              ),
+              menuChildren: [
+                for (final k in const [
+                  IngredientKind.flavor,
+                  IngredientKind.additive,
+                  IngredientKind.thinner,
+                ])
+                  MenuItemButton(
+                    onPressed: () => setState(() {
+                      e.kind = k;
+                      // The old selection may not belong to the new kind.
+                      if (s.byId(e.ingredientId)?.kind != k) {
+                        e.ingredientId = null;
+                      }
+                    }),
+                    child: Text(kindLabel(k)),
+                  ),
+              ],
+            ),
+          ),
           Expanded(
             child: IngredientPickerField(
-              label: 'Flavor',
-              items: s.ofKind(IngredientKind.flavor),
+              label: kindLabel(e.kind),
+              items: s.ofKind(e.kind),
               selectedId: e.ingredientId,
               settings: s.settings,
-              emptyHint: 'No flavors yet — add them in Inventory',
+              state: s,
+              createKind: e.kind,
+              emptyHint:
+                  'No ${kindLabel(e.kind).toLowerCase()}s yet — '
+                  'search a name and create it',
               onSelected: (id) => setState(() => e.ingredientId = id),
             ),
           ),
@@ -303,7 +455,6 @@ class _CalculatorPageState extends State<CalculatorPage> {
               keyboardType: const TextInputType.numberWithOptions(
                 decimal: true,
               ),
-              onChanged: (_) => setState(() {}),
               decoration: InputDecoration(
                 labelText: '%',
                 border: const OutlineInputBorder(),
@@ -316,10 +467,10 @@ class _CalculatorPageState extends State<CalculatorPage> {
             Padding(
               padding: const EdgeInsets.only(left: 4),
               child: Tooltip(
-                message: 'Selected more than once — percentages are combined',
+                message: 'Selected more than once — amounts are combined',
                 child: Icon(
                   Icons.merge_type,
-                  color: Theme.of(context).colorScheme.tertiary,
+                  color: theme.colorScheme.tertiary,
                   size: 20,
                 ),
               ),
@@ -331,16 +482,17 @@ class _CalculatorPageState extends State<CalculatorPage> {
                 message: 'Only ${ing.stockMl.toStringAsFixed(1)} mL in stock',
                 child: Icon(
                   Icons.warning_amber_rounded,
-                  color: Theme.of(context).colorScheme.error,
+                  color: theme.colorScheme.error,
                   size: 20,
                 ),
               ),
             ),
           IconButton(
             icon: const Icon(Icons.close),
+            tooltip: 'Remove',
             onPressed: () => setState(() {
               e.dispose();
-              _flavors.remove(e);
+              _rows.remove(e);
             }),
           ),
         ],
@@ -402,8 +554,20 @@ class _CalculatorPageState extends State<CalculatorPage> {
             ),
             Text('Nicotine: ${r.actualNicMgPerMl.toStringAsFixed(2)} mg/mL'),
             Text(
-              'Bottle cost: ${money(r.totalCost, set)}'
-              '  •  per ${ref.toStringAsFixed(0)} mL: '
+              'Flavor: ${r.flavorPercentByWeight.toStringAsFixed(1)}% by '
+              'weight, ${r.flavorPercentByVolume.toStringAsFixed(1)}% by '
+              'volume',
+            ),
+            if (r.hasAdditives || r.hasThinners)
+              Text(
+                'Additives and thinners are excluded from the flavor total.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.outline,
+                ),
+              ),
+            Text(
+              'Bottle cost: ${money(r.totalCost, set)}  •  per '
+              '${ref.toStringAsFixed(0)} mL: '
               '${money(r.totalMl > 0 ? r.totalCost / r.totalMl * ref : 0, set)}',
             ),
             for (final w in r.warnings)
@@ -491,7 +655,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
                     label: Text('Update "${loaded.name}"'),
                   ),
                 OutlinedButton.icon(
-                  onPressed: _flavors.isEmpty ? null : _saveAsNewRecipe,
+                  onPressed: _rows.isEmpty ? null : _saveAsNewRecipe,
                   icon: const Icon(Icons.bookmark_add_outlined),
                   label: Text(
                     loaded != null ? 'Save as new recipe' : 'Save as recipe',
@@ -505,7 +669,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
     );
   }
 
-  // ---------------------------------------------------------------- mixing
+  // ------------------------------------------------------------------ mixing
 
   Future<bool> _confirmShort(List<StockIssue> issues) async {
     if (issues.isEmpty) return true;
@@ -534,18 +698,11 @@ class _CalculatorPageState extends State<CalculatorPage> {
   }
 
   void _logged(MixLog log) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          'Logged "${log.label}" — ${log.totalGrams.toStringAsFixed(2)} g, '
-          'inventory deducted.',
-        ),
-        duration: const Duration(seconds: 8),
-        action: SnackBarAction(
-          label: 'Undo',
-          onPressed: () => s.undoMix(log.id),
-        ),
-      ),
+    showToast(
+      context,
+      'Logged "${log.label}" — ${log.totalGrams.toStringAsFixed(2)} g, '
+      'inventory deducted.',
+      action: SnackBarAction(label: 'Undo', onPressed: () => s.undoMix(log.id)),
     );
   }
 
@@ -580,10 +737,10 @@ class _CalculatorPageState extends State<CalculatorPage> {
     _logged(log);
   }
 
-  // --------------------------------------------------------------- recipes
+  // ----------------------------------------------------------------- recipes
 
   List<RecipeFlavor> _currentFlavors() => [
-    for (final e in _flavors)
+    for (final e in _rows)
       if (s.byId(e.ingredientId) != null && _val(e.percent) > 0)
         RecipeFlavor(
           ingredientId: e.ingredientId!,
@@ -611,11 +768,11 @@ class _CalculatorPageState extends State<CalculatorPage> {
         batchMl: _val(_batch),
         targetNic: _val(_nic),
         targetVgPercent: _val(_vg),
+        percentMode: _percentMode,
         flavors: _currentFlavors(),
       ),
     );
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('Updated "${loaded.name}".')));
+    showToast(context, 'Updated "${loaded.name}".');
   }
 
   Future<void> _saveAsNewRecipe() async {
@@ -623,14 +780,16 @@ class _CalculatorPageState extends State<CalculatorPage> {
       text: _loadedRecipe != null ? '$_label (variant)' : _label,
     );
     final notes = TextEditingController();
+
     final saved = await showDialog<Recipe>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Save as recipe'),
         content: SizedBox(
-          width: 360,
+          width: 380,
           child: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               TextField(
                 controller: name,
@@ -648,6 +807,12 @@ class _CalculatorPageState extends State<CalculatorPage> {
                   labelText: 'Notes',
                   border: OutlineInputBorder(),
                 ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Saved as ${percentModeLabel(_percentMode).toLowerCase()} '
+                'percentages.',
+                style: Theme.of(context).textTheme.bodySmall,
               ),
             ],
           ),
@@ -669,6 +834,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
                 batchMl: _val(_batch),
                 targetNic: _val(_nic),
                 targetVgPercent: _val(_vg),
+                percentMode: _percentMode,
                 flavors: _currentFlavors(),
               ),
             ),
@@ -677,6 +843,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
         ],
       ),
     );
+
     name.dispose();
     notes.dispose();
     if (saved == null) return;
@@ -687,8 +854,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
       _label = saved.name;
       _loadedRecipeId = saved.id;
     });
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('Saved "${saved.name}".')));
+    showToast(context, 'Saved "${saved.name}".');
   }
 
   TableRow _row(String a, String b, String c, String d, {bool header = false}) {

@@ -23,7 +23,7 @@ class AppState extends ChangeNotifier {
   static const _kRecipes = 'recipes_v1';
   static const _kMixLog = 'mixlog_v1';
   static const _kPurchases = 'purchases_v1';
-  static const currentSchema = 4;
+  static const currentSchema = 5;
 
   static const _allKeys = [
     _kSchema,
@@ -204,6 +204,25 @@ class AppState extends ChangeNotifier {
         }
       }
       v = 4;
+    }
+    if (v < 5) {
+      // v5 adds additive/thinner ingredient kinds and per-recipe percent
+      // mode. Both are additive with safe defaults, so no transform runs —
+      // the bump exists so an older build refuses to import v5 data rather
+      // than crashing on an unknown enum index. flavor density now defaults to PG density, since nearly all
+      // concentrates are PG-based. Only move it if the old default was
+      // never changed — a measured value stays.
+      final raw = prefs.getString(_kSettings);
+      if (raw != null) {
+        final j = jsonDecode(raw) as Map<String, dynamic>;
+        final fd = (j['flavorDensity'] as num?)?.toDouble();
+        if (fd != null && (fd - 1.0).abs() < 1e-9) {
+          j['flavorDensity'] = kFlavorDensity;
+          await prefs.setString(_kSettings, jsonEncode(j));
+          debugPrint('Flavor density default moved to $kFlavorDensity (v6).');
+        }
+      }
+      v = 5;
     }
     await prefs.setInt(_kSchema, v);
   }
@@ -500,6 +519,12 @@ class AppState extends ChangeNotifier {
     }
     return null;
   }
+
+  /// Everything addable by percentage: flavors, additives and thinners.
+  List<Ingredient> get concentrates => [
+    for (final e in ingredients)
+      if (isConcentrate(e.kind)) e,
+  ];
 
   Recipe? recipeById(String? id) {
     if (id == null) return null;

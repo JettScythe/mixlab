@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 
 import '../models.dart';
 import '../state.dart';
+import '../widgets/toast.dart';
 
 /// Platforms where file_selector implements a native save panel.
 bool get _canSaveToFile {
@@ -21,6 +22,7 @@ const _scaleOptions = <double>[0.001, 0.01, 0.1];
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key, required this.state});
   final AppState state;
+
   @override
   State<SettingsPage> createState() => _SettingsPageState();
 }
@@ -29,6 +31,7 @@ class _SettingsPageState extends State<SettingsPage> {
   late final TextEditingController pg,
       vg,
       flavor,
+      thinner,
       currency,
       defVg,
       defBatch,
@@ -36,20 +39,18 @@ class _SettingsPageState extends State<SettingsPage> {
       lowStock;
   late double scaleRes;
   late bool tareEach;
+  late PercentMode defaultMode;
 
   AppState get s => widget.state;
 
   @override
   void initState() {
     super.initState();
-    _adoptSettings();
-  }
-
-  void _adoptSettings() {
     final c = s.settings;
     pg = TextEditingController(text: c.pgDensity.toString());
     vg = TextEditingController(text: c.vgDensity.toString());
     flavor = TextEditingController(text: c.flavorDensity.toString());
+    thinner = TextEditingController(text: c.thinnerDensity.toString());
     currency = TextEditingController(text: c.currency);
     defVg = TextEditingController(text: c.defaultVgPercent.toStringAsFixed(0));
     defBatch = TextEditingController(text: c.defaultBatchMl.toStringAsFixed(0));
@@ -59,13 +60,16 @@ class _SettingsPageState extends State<SettingsPage> {
         ? c.scaleResolution
         : 0.01;
     tareEach = c.tareEachStep;
+    defaultMode = c.defaultPercentMode;
   }
 
+  /// Re-reads every control from settings, after an import or reset.
   void _refillFromSettings() {
     final c = s.settings;
     pg.text = c.pgDensity.toString();
     vg.text = c.vgDensity.toString();
     flavor.text = c.flavorDensity.toString();
+    thinner.text = c.thinnerDensity.toString();
     currency.text = c.currency;
     defVg.text = c.defaultVgPercent.toStringAsFixed(0);
     defBatch.text = c.defaultBatchMl.toStringAsFixed(0);
@@ -75,6 +79,7 @@ class _SettingsPageState extends State<SettingsPage> {
         ? c.scaleResolution
         : 0.01;
     tareEach = c.tareEachStep;
+    defaultMode = c.defaultPercentMode;
   }
 
   @override
@@ -83,6 +88,7 @@ class _SettingsPageState extends State<SettingsPage> {
       pg,
       vg,
       flavor,
+      thinner,
       currency,
       defVg,
       defBatch,
@@ -96,16 +102,12 @@ class _SettingsPageState extends State<SettingsPage> {
 
   double _v(TextEditingController c, double fallback) =>
       parseNum(c.text) ?? fallback;
+
   bool _bad(TextEditingController c) =>
       c.text.trim().isNotEmpty && parseNum(c.text) == null;
 
-  void _toast(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
-
-  /// Errors go in a dialog with the text selectable — a snackbar is too easy
-  /// to miss and impossible to copy.
+  /// Errors go in a dialog with selectable text — a snackbar is too easy to
+  /// miss and impossible to copy.
   Future<void> _showError(String title, Object error) async {
     if (!mounted) return;
     await showDialog<void>(
@@ -135,10 +137,12 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final anyBad = [
       pg,
       vg,
       flavor,
+      thinner,
       defVg,
       defBatch,
       refBottle,
@@ -149,10 +153,32 @@ class _SettingsPageState extends State<SettingsPage> {
       padding: const EdgeInsets.all(16),
       child: Column(
         children: [
-          _card('Mixing defaults', [
+          _card('Densities', [
+            Text(
+              'Used when an ingredient has no measured density of its own. '
+              'Concentrates are mostly carrier, so a PG-based flavor sits '
+              'close to PG.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.outline,
+              ),
+            ),
+            const SizedBox(height: 12),
             _field(pg, 'PG density (g/mL)'),
             _field(vg, 'VG density (g/mL)'),
-            _field(flavor, 'Default flavor density (g/mL)'),
+            _field(
+              flavor,
+              'Flavor and additive base density (g/mL)',
+              helper: 'Most concentrates are PG-based.',
+            ),
+            _field(
+              thinner,
+              'Thinner density (g/mL)',
+              helper: 'Distilled water ~1.0, PGA ~0.95.',
+            ),
+          ]),
+          const SizedBox(height: 16),
+
+          _card('Mixing defaults', [
             _field(
               currency,
               'Currency code (ISO, e.g. USD, EUR, GBP)',
@@ -162,12 +188,39 @@ class _SettingsPageState extends State<SettingsPage> {
             _field(defBatch, 'Default batch size (mL)'),
             _field(refBottle, 'Reference bottle for cost readout (mL)'),
             _field(lowStock, 'Low stock warning below (mL)'),
+            const SizedBox(height: 8),
+            Text(
+              'Default percentage mode for new recipes',
+              style: theme.textTheme.titleSmall,
+            ),
+            const SizedBox(height: 6),
+            SegmentedButton<PercentMode>(
+              segments: [
+                for (final m in PercentMode.values)
+                  ButtonSegment(value: m, label: Text(percentModeLabel(m))),
+              ],
+              selected: {defaultMode},
+              onSelectionChanged: (v) => setState(() => defaultMode = v.first),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                percentModeHint(defaultMode),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.outline,
+                ),
+              ),
+            ),
           ]),
           const SizedBox(height: 16),
+
           _card('Scale', [
-            const Text(
-              'Resolution of your scale. Amounts smaller than this '
-              'get flagged in the calculator and weigh-along.',
+            Text(
+              'Resolution of your scale. Amounts smaller than this get '
+              'flagged in the calculator and weigh-along.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.outline,
+              ),
             ),
             const SizedBox(height: 12),
             Align(
@@ -186,30 +239,26 @@ class _SettingsPageState extends State<SettingsPage> {
               contentPadding: EdgeInsets.zero,
               title: const Text('Tare between ingredients'),
               subtitle: const Text(
-                'Off: one cumulative running total '
-                '(recommended). On: zero the scale before each ingredient.',
+                'Off: one cumulative running total (recommended). '
+                'On: zero the scale before each ingredient.',
               ),
               value: tareEach,
               onChanged: (v) => setState(() => tareEach = v),
             ),
           ]),
           const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: FilledButton.icon(
-                  onPressed: anyBad ? null : _saveSettings,
-                  icon: const Icon(Icons.save_outlined),
-                  label: const Text('Save settings'),
-                ),
-              ),
-            ],
+
+          FilledButton.icon(
+            onPressed: anyBad ? null : _saveSettings,
+            icon: const Icon(Icons.save_outlined),
+            label: const Text('Save settings'),
           ),
           const SizedBox(height: 24),
+
           _card('Backup', [
             const Text(
-              'Exports ingredients, recipes, restocks, mix history '
-              'and settings as one JSON file. Import merges by id, so '
+              'Exports ingredients, recipes, restocks, mix history and '
+              'settings as one JSON file. Import merges by id, so '
               're-importing the same file is safe.',
             ),
             const SizedBox(height: 12),
@@ -228,7 +277,8 @@ class _SettingsPageState extends State<SettingsPage> {
                     await Clipboard.setData(
                       ClipboardData(text: s.exportJson()),
                     );
-                    _toast('Backup JSON copied to clipboard.');
+                    if (!context.mounted) return;
+                    showToast(context, 'Backup JSON copied to clipboard.');
                   },
                   icon: const Icon(Icons.copy_all_outlined),
                   label: const Text('Copy JSON'),
@@ -252,14 +302,15 @@ class _SettingsPageState extends State<SettingsPage> {
               '${s.recipes.length} recipes, '
               '${s.mixLog.length} mixes, '
               '${s.purchases.length} restocks',
-              style: Theme.of(context).textTheme.bodySmall,
+              style: theme.textTheme.bodySmall,
             ),
           ]),
           const SizedBox(height: 16),
+
           _card('Danger zone', [
             OutlinedButton.icon(
               style: OutlinedButton.styleFrom(
-                foregroundColor: Theme.of(context).colorScheme.error,
+                foregroundColor: theme.colorScheme.error,
               ),
               onPressed: _reset,
               icon: const Icon(Icons.restart_alt),
@@ -278,6 +329,7 @@ class _SettingsPageState extends State<SettingsPage> {
         pgDensity: _v(pg, old.pgDensity),
         vgDensity: _v(vg, old.vgDensity),
         flavorDensity: _v(flavor, old.flavorDensity),
+        thinnerDensity: _v(thinner, old.thinnerDensity),
         currency: currency.text.trim().isEmpty
             ? old.currency
             : currency.text.trim().toUpperCase(),
@@ -287,9 +339,10 @@ class _SettingsPageState extends State<SettingsPage> {
         scaleResolution: scaleRes,
         tareEachStep: tareEach,
         lowStockMl: _v(lowStock, old.lowStockMl),
+        defaultPercentMode: defaultMode,
       ),
     );
-    _toast('Settings saved.');
+    showToast(context, 'Settings saved.');
   }
 
   Widget _card(String title, List<Widget> children) => Card(
@@ -306,22 +359,27 @@ class _SettingsPageState extends State<SettingsPage> {
     ),
   );
 
-  Widget _field(TextEditingController c, String label, {bool numeric = true}) =>
-      Padding(
-        padding: const EdgeInsets.only(bottom: 8),
-        child: TextField(
-          controller: c,
-          onChanged: (_) => setState(() {}),
-          keyboardType: numeric
-              ? const TextInputType.numberWithOptions(decimal: true)
-              : null,
-          decoration: InputDecoration(
-            labelText: label,
-            border: const OutlineInputBorder(),
-            errorText: numeric && _bad(c) ? 'Enter a number' : null,
-          ),
-        ),
-      );
+  Widget _field(
+    TextEditingController c,
+    String label, {
+    bool numeric = true,
+    String? helper,
+  }) => Padding(
+    padding: const EdgeInsets.only(bottom: 8),
+    child: TextField(
+      controller: c,
+      onChanged: (_) => setState(() {}),
+      keyboardType: numeric
+          ? const TextInputType.numberWithOptions(decimal: true)
+          : null,
+      decoration: InputDecoration(
+        labelText: label,
+        helperText: helper,
+        border: const OutlineInputBorder(),
+        errorText: numeric && _bad(c) ? 'Enter a number' : null,
+      ),
+    ),
+  );
 
   Future<void> _export() async {
     try {
@@ -331,11 +389,12 @@ class _SettingsPageState extends State<SettingsPage> {
       final suggested = 'mixlab-backup-$stamp.json';
 
       if (!_canSaveToFile) {
-        // iOS/Android: file_selector has no save panel.
         await Clipboard.setData(ClipboardData(text: json));
-        _toast(
-          'Saving to a file is not supported here — '
-          'backup copied to the clipboard instead.',
+        if (!mounted) return;
+        showToast(
+          context,
+          'Saving to a file is not supported here — backup copied to the '
+          'clipboard instead.',
         );
         return;
       }
@@ -349,7 +408,8 @@ class _SettingsPageState extends State<SettingsPage> {
 
       if (kIsWeb) {
         await file.saveTo(suggested); // triggers a browser download
-        _toast('Backup downloaded.');
+        if (!mounted) return;
+        showToast(context, 'Backup downloaded.');
         return;
       }
 
@@ -360,7 +420,8 @@ class _SettingsPageState extends State<SettingsPage> {
         confirmButtonText: 'Save backup',
       );
       if (loc == null) {
-        _toast('Export cancelled.');
+        if (!mounted) return;
+        showToast(context, 'Export cancelled.');
         return;
       }
 
@@ -368,7 +429,8 @@ class _SettingsPageState extends State<SettingsPage> {
           ? loc.path
           : '${loc.path}.json';
       await file.saveTo(path);
-      _toast('Backup saved to $path');
+      if (!mounted) return;
+      showToast(context, 'Backup saved to $path');
     } catch (e, st) {
       debugPrint('Export failed: $e');
       debugPrintStack(stackTrace: st);
@@ -383,8 +445,8 @@ class _SettingsPageState extends State<SettingsPage> {
         builder: (context) => AlertDialog(
           title: const Text('Replace everything?'),
           content: const Text(
-            'Your current ingredients, recipes, restocks '
-            'and mix history will be deleted and replaced by the backup.',
+            'Your current ingredients, recipes, restocks and mix history '
+            'will be deleted and replaced by the backup.',
           ),
           actions: [
             TextButton(
@@ -410,7 +472,7 @@ class _SettingsPageState extends State<SettingsPage> {
       );
       if (!mounted) return;
       setState(_refillFromSettings);
-      _toast(summary);
+      showToast(context, summary);
     } catch (e, st) {
       debugPrint('Import failed: $e');
       debugPrintStack(stackTrace: st);
@@ -424,8 +486,8 @@ class _SettingsPageState extends State<SettingsPage> {
       builder: (context) => AlertDialog(
         title: const Text('Reset all data?'),
         content: const Text(
-          'Everything goes back to the seeded flavors and '
-          'recipes. Export a backup first if you care about your stash.',
+          'Everything goes back to the seeded flavors and recipes. Export a '
+          'backup first if you care about your stash.',
         ),
         actions: [
           TextButton(
@@ -443,6 +505,6 @@ class _SettingsPageState extends State<SettingsPage> {
     await s.factoryReset();
     if (!mounted) return;
     setState(_refillFromSettings);
-    _toast('Data reset.');
+    showToast(context, 'Data reset.');
   }
 }

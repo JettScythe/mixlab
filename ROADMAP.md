@@ -24,14 +24,14 @@ The current engine assumes percentages are by volume, every concentrate
 counts as flavor, and nicotine is measured in mg/mL. That covers most
 DIY, not all of it.
 
-- [ ] **Percent by weight.** Per-recipe toggle stored on `Recipe`.
+- [x] **Percent by weight.** Per-recipe toggle stored on `Recipe`.
       Volume and weight percentages differ by up to ~20% on VG-heavy
       mixes, so the mode must be explicit and visible, never inferred.
       The README currently claims "weight-first" while percentages are
       volume-based — this closes that gap.
 - [ ] **Max-VG mode.** No PG beyond what concentrates carry in. A large
       share of mixers work this way and it is currently inexpressible.
-- [ ] **Additive and thinner ingredient kinds.** Sucralose, WS-23, EM
+- [x] **Additive and thinner ingredient kinds.** Sucralose, WS-23, EM
       and distilled water behave like flavors but should not count
       toward the flavor percentage.
 - [ ] **Nicotine salts and mg/g bases.** Requires a strength-unit field
@@ -134,7 +134,7 @@ Not user-visible, but each one prevents a class of future bug.
 
 ## Ongoing — UX
 
-- [ ] **Inline ingredient creation** from the flavor picker, so adding
+- [x] **Inline ingredient creation** from the flavor picker, so adding
       a recipe does not require abandoning it for the Inventory tab.
 - [ ] **Keyboard navigation** in the picker — arrow keys through
       results, not just type-and-Enter.

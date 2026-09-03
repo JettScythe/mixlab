@@ -18,11 +18,14 @@ class RecipeEditorPage extends StatefulWidget {
   State<RecipeEditorPage> createState() => _RecipeEditorPageState();
 }
 
-class _FlavorRow {
-  _FlavorRow({this.ingredientId, String percent = ''})
+/// One reorderable ingredient row. Carries its kind so additives and
+/// thinners can be listed alongside flavors without polluting the total.
+class _ConcentrateRow {
+  _ConcentrateRow(this.kind, {this.ingredientId, String percent = ''})
     : percent = TextEditingController(text: percent);
 
   final Key key = UniqueKey();
+  IngredientKind kind;
   String? ingredientId;
   final TextEditingController percent;
 
@@ -31,7 +34,8 @@ class _FlavorRow {
 
 class _RecipeEditorPageState extends State<RecipeEditorPage> {
   late final TextEditingController _name, _notes, _batch, _nic, _vg;
-  final List<_FlavorRow> _flavors = [];
+  final List<_ConcentrateRow> _rows = [];
+  late PercentMode _percentMode;
   late String _initialSnapshot;
 
   AppState get s => widget.state;
@@ -52,12 +56,17 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
     _vg = TextEditingController(
       text: _fmt(e?.targetVgPercent ?? set.defaultVgPercent),
     );
+    _percentMode = e?.percentMode ?? set.defaultPercentMode;
 
     if (e != null) {
       for (final f in e.flavors) {
         final ing = s.byId(f.ingredientId) ?? s.flavorByName(f.name);
-        _flavors.add(
-          _FlavorRow(ingredientId: ing?.id, percent: _fmt(f.percent)),
+        _rows.add(
+          _ConcentrateRow(
+            ing?.kind ?? IngredientKind.flavor,
+            ingredientId: ing?.id,
+            percent: _fmt(f.percent),
+          ),
         );
       }
     }
@@ -65,7 +74,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
     for (final c in [_name, _notes, _batch, _nic, _vg]) {
       c.addListener(_onChanged);
     }
-    for (final r in _flavors) {
+    for (final r in _rows) {
       r.percent.addListener(_onChanged);
     }
     _initialSnapshot = _snapshot();
@@ -76,7 +85,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
     for (final c in [_name, _notes, _batch, _nic, _vg]) {
       c.dispose();
     }
-    for (final r in _flavors) {
+    for (final r in _rows) {
       r.dispose();
     }
     super.dispose();
@@ -88,6 +97,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
       v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toString();
 
   double _val(TextEditingController c) => parseNum(c.text) ?? 0;
+
   bool _bad(TextEditingController c) =>
       c.text.trim().isNotEmpty && parseNum(c.text) == null;
 
@@ -103,8 +113,9 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
     batchMl: _val(_batch),
     targetNic: _val(_nic),
     targetVgPercent: _val(_vg),
+    percentMode: _percentMode,
     flavors: [
-      for (final r in _flavors)
+      for (final r in _rows)
         if (s.byId(r.ingredientId) != null && _val(r.percent) > 0)
           RecipeFlavor(
             ingredientId: r.ingredientId!,
@@ -114,16 +125,16 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
     ],
   );
 
-  // ------------------------------------------------------------- validation
+  // -------------------------------------------------------------- validation
 
-  int get _incompleteRows => _flavors
+  int get _incompleteRows => _rows
       .where((r) => s.byId(r.ingredientId) == null || _val(r.percent) <= 0)
       .length;
 
   Set<String> get _duplicateIds {
     final seen = <String>{};
     final dupes = <String>{};
-    for (final r in _flavors) {
+    for (final r in _rows) {
       final id = r.ingredientId;
       if (id == null) continue;
       if (!seen.add(id)) dupes.add(id);
@@ -134,20 +145,19 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
   bool get _canSave {
     if (_name.text.trim().isEmpty) return false;
     if ([_batch, _nic, _vg].any(_bad)) return false;
-    if (_flavors.any((r) => _bad(r.percent))) return false;
+    if (_rows.any((r) => _bad(r.percent))) return false;
     return true;
   }
 
   // ----------------------------------------------------------------- actions
 
-  void _addFlavor() => setState(() {
-    final row = _FlavorRow()..percent.addListener(_onChanged);
-    _flavors.add(row);
+  void _addRow(IngredientKind kind) => setState(() {
+    _rows.add(_ConcentrateRow(kind)..percent.addListener(_onChanged));
   });
 
-  void _removeFlavor(_FlavorRow row) => setState(() {
+  void _removeRow(_ConcentrateRow row) => setState(() {
     row.dispose();
-    _flavors.remove(row);
+    _rows.remove(row);
   });
 
   Future<bool> _confirmDiscard() async {
@@ -240,6 +250,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
 
   Widget _form(ThemeData theme) {
     final nameClash = s.recipeByName(_name.text, exceptId: widget.existing?.id);
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -282,29 +293,65 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
                 Expanded(child: _num(_vg, 'VG %')),
               ],
             ),
+            const SizedBox(height: 16),
+            Text('Percentages are', style: theme.textTheme.titleSmall),
+            const SizedBox(height: 6),
+            SegmentedButton<PercentMode>(
+              segments: [
+                for (final m in PercentMode.values)
+                  ButtonSegment(value: m, label: Text(percentModeLabel(m))),
+              ],
+              selected: {_percentMode},
+              onSelectionChanged: (v) => setState(() => _percentMode = v.first),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                percentModeHint(_percentMode),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.outline,
+                ),
+              ),
+            ),
             const SizedBox(height: 20),
             Row(
               children: [
                 Expanded(
                   child: Text(
-                    'Flavors (${_flavors.length})',
+                    'Ingredients (${_rows.length})',
                     style: theme.textTheme.titleMedium,
                   ),
                 ),
-                FilledButton.tonalIcon(
-                  onPressed: _addFlavor,
-                  icon: const Icon(Icons.add),
-                  label: const Text('Add'),
+                MenuAnchor(
+                  builder: (context, controller, child) =>
+                      FilledButton.tonalIcon(
+                        onPressed: () => controller.isOpen
+                            ? controller.close()
+                            : controller.open(),
+                        icon: const Icon(Icons.add),
+                        label: const Text('Add'),
+                      ),
+                  menuChildren: [
+                    for (final k in const [
+                      IngredientKind.flavor,
+                      IngredientKind.additive,
+                      IngredientKind.thinner,
+                    ])
+                      MenuItemButton(
+                        onPressed: () => _addRow(k),
+                        child: Text(kindLabel(k)),
+                      ),
+                  ],
                 ),
               ],
             ),
             const SizedBox(height: 8),
-            if (_flavors.isEmpty)
+            if (_rows.isEmpty)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 24),
                 child: Center(
                   child: Text(
-                    'No flavors yet.',
+                    'No ingredients yet.',
                     style: theme.textTheme.bodyMedium,
                   ),
                 ),
@@ -315,11 +362,10 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
                 buildDefaultDragHandles: false,
                 physics: const NeverScrollableScrollPhysics(),
                 onReorderItem: (oldIndex, newIndex) => setState(() {
-                  _flavors.insert(newIndex, _flavors.removeAt(oldIndex));
+                  _rows.insert(newIndex, _rows.removeAt(oldIndex));
                 }),
                 children: [
-                  for (var i = 0; i < _flavors.length; i++)
-                    _flavorTile(i, theme),
+                  for (var i = 0; i < _rows.length; i++) _rowTile(i, theme),
                 ],
               ),
           ],
@@ -339,8 +385,8 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
     ),
   );
 
-  Widget _flavorTile(int i, ThemeData theme) {
-    final row = _flavors[i];
+  Widget _rowTile(int i, ThemeData theme) {
+    final row = _rows[i];
     final ing = s.byId(row.ingredientId);
     final isDupe =
         row.ingredientId != null && _duplicateIds.contains(row.ingredientId);
@@ -359,13 +405,68 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
               child: Icon(Icons.drag_indicator, size: 20),
             ),
           ),
+          // Kind badge, tappable to reclassify.
+          Padding(
+            padding: const EdgeInsets.only(right: 6),
+            child: MenuAnchor(
+              builder: (context, controller, child) => Tooltip(
+                message: '${kindLabel(row.kind)} — tap to change',
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(6),
+                  onTap: () => controller.isOpen
+                      ? controller.close()
+                      : controller.open(),
+                  child: Container(
+                    width: 34,
+                    height: 34,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(6),
+                      color: switch (row.kind) {
+                        IngredientKind.additive =>
+                          theme.colorScheme.tertiaryContainer,
+                        IngredientKind.thinner =>
+                          theme.colorScheme.secondaryContainer,
+                        _ => theme.colorScheme.surfaceContainerHighest,
+                      },
+                    ),
+                    child: Icon(switch (row.kind) {
+                      IngredientKind.additive => Icons.auto_awesome,
+                      IngredientKind.thinner => Icons.water_drop_outlined,
+                      _ => Icons.local_florist_outlined,
+                    }, size: 18),
+                  ),
+                ),
+              ),
+              menuChildren: [
+                for (final k in const [
+                  IngredientKind.flavor,
+                  IngredientKind.additive,
+                  IngredientKind.thinner,
+                ])
+                  MenuItemButton(
+                    onPressed: () => setState(() {
+                      row.kind = k;
+                      if (s.byId(row.ingredientId)?.kind != k) {
+                        row.ingredientId = null;
+                      }
+                    }),
+                    child: Text(kindLabel(k)),
+                  ),
+              ],
+            ),
+          ),
           Expanded(
             child: IngredientPickerField(
-              label: 'Flavor',
-              items: s.ofKind(IngredientKind.flavor),
+              label: kindLabel(row.kind),
+              items: s.ofKind(row.kind),
               selectedId: row.ingredientId,
               settings: s.settings,
-              emptyHint: 'No flavors yet — add them in Inventory',
+              state: s,
+              createKind: row.kind,
+              emptyHint:
+                  'No ${kindLabel(row.kind).toLowerCase()}s yet — '
+                  'search a name and create it',
               onSelected: (id) => setState(() => row.ingredientId = id),
             ),
           ),
@@ -411,8 +512,8 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
             ),
           IconButton(
             icon: const Icon(Icons.close),
-            tooltip: 'Remove flavor',
-            onPressed: () => _removeFlavor(row),
+            tooltip: 'Remove',
+            onPressed: () => _removeRow(row),
           ),
         ],
       ),
@@ -432,6 +533,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
       targetNic: draft.targetNic,
       targetVgPercent: draft.targetVgPercent,
       settings: set,
+      percentMode: _percentMode,
       nic: s.firstOfKind(IngredientKind.nicotine),
       pg: s.firstOfKind(IngredientKind.pg),
       vg: s.firstOfKind(IngredientKind.vg),
@@ -452,10 +554,17 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
             ),
             const SizedBox(height: 12),
             _stat(
-              'Total flavor',
-              '${draft.totalFlavorPercent.toStringAsFixed(1)} %',
+              'Flavor',
+              '${result.flavorPercentByVolume.toStringAsFixed(1)}% vol / '
+                  '${result.flavorPercentByWeight.toStringAsFixed(1)}% wt',
               theme,
             ),
+            if (result.hasAdditives)
+              _stat(
+                'Additives',
+                '${result.additivePercentByVolume.toStringAsFixed(1)}%',
+                theme,
+              ),
             _stat(
               'Batch weight',
               '${result.totalGrams.toStringAsFixed(2)} g',
@@ -489,9 +598,9 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
                 theme.colorScheme.error,
                 theme,
               ),
-            if (_flavors.isEmpty)
+            if (_rows.isEmpty)
               _note(
-                'A recipe with no flavors is allowed, but it is just base.',
+                'A recipe with no ingredients is allowed, but it is just base.',
                 theme.colorScheme.outline,
                 theme,
               ),
@@ -508,7 +617,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
         Expanded(child: Text(label)),
         Text(
           value,
-          style: theme.textTheme.titleMedium?.copyWith(
+          style: theme.textTheme.titleSmall?.copyWith(
             fontWeight: FontWeight.bold,
           ),
         ),

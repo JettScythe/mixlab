@@ -286,14 +286,34 @@ void main() {
         closeTo(1.1485, 1e-9),
       );
     });
-
-    test('VG-carried flavor blends toward VG density', () {
+    test('a PG-carried flavor matches PG density', () {
       final s = Settings();
-      expect(s.densityForCarrier(IngredientKind.flavor, 0), closeTo(1.0, 1e-9));
+      // Concentrates are mostly carrier, so a PG-based flavor is ~1.036,
+      // not 1.0. Anything else made densityForCarrier inconsistent between
+      // nicotine and flavor.
+      expect(
+        s.densityForCarrier(IngredientKind.flavor, 0),
+        closeTo(s.pgDensity, 1e-9),
+      );
       expect(
         s.densityForCarrier(IngredientKind.flavor, 1),
         closeTo(1.261, 1e-9),
       );
+    });
+
+    test('flavor, additive and nicotine agree at the same carrier', () {
+      final s = Settings();
+      for (final v in [0.0, 0.5, 1.0]) {
+        final nic = s.densityForCarrier(IngredientKind.nicotine, v);
+        expect(
+          s.densityForCarrier(IngredientKind.flavor, v),
+          closeTo(nic, 1e-9),
+        );
+        expect(
+          s.densityForCarrier(IngredientKind.additive, v),
+          closeTo(nic, 1e-9),
+        );
+      }
     });
 
     test('densityLooksWrong flags a VG base left at the PG default', () {
@@ -1176,7 +1196,7 @@ void main() {
       expect(s.mixCountForRecipe('r1'), 1);
 
       final prefs = await SharedPreferences.getInstance();
-      expect(prefs.getInt('schema_version'), 4);
+      expect(prefs.getInt('schema_version'), AppState.currentSchema);
     });
 
     test('v3 backups import with the new fields defaulted', () async {

@@ -1,10 +1,64 @@
-enum IngredientKind { pg, vg, nicotine, flavor }
+enum IngredientKind { pg, vg, nicotine, flavor, additive, thinner }
+
+/// Reference densities at room temperature, g/mL.
+const kPgDensity = 1.036;
+const kVgDensity = 1.261;
+
+/// Most flavor concentrates are PG-based, so they default to PG. Thinners
+/// are not — distilled water is ~1.0, PGA closer to 0.94.
+const kFlavorDensity = kPgDensity;
+const kThinnerDensity = 1.0;
+
+/// Enum indices are persisted, so values may only be appended.
+/// Unknown indices from a newer build degrade to [IngredientKind.flavor].
+IngredientKind kindFromIndex(int i) =>
+    (i >= 0 && i < IngredientKind.values.length)
+    ? IngredientKind.values[i]
+    : IngredientKind.flavor;
 
 String kindLabel(IngredientKind k) => switch (k) {
   IngredientKind.pg => 'PG',
   IngredientKind.vg => 'VG',
   IngredientKind.nicotine => 'Nicotine base',
   IngredientKind.flavor => 'Flavor',
+  IngredientKind.additive => 'Additive',
+  IngredientKind.thinner => 'Thinner',
+};
+
+String kindHint(IngredientKind k) => switch (k) {
+  IngredientKind.pg => 'Propylene glycol base.',
+  IngredientKind.vg => 'Vegetable glycerin base.',
+  IngredientKind.nicotine => 'Nicotine base, measured in mg/mL.',
+  IngredientKind.flavor => 'Counts toward the recipe flavor percentage.',
+  IngredientKind.additive =>
+    'Sweeteners, coolants, enhancers. Added by percentage but excluded '
+        'from the flavor total.',
+  IngredientKind.thinner =>
+    'Distilled water, PGA and similar diluents. Excluded from the flavor '
+        'total.',
+};
+
+/// Ingredients added as a percentage of the batch rather than filling it.
+bool isConcentrate(IngredientKind k) =>
+    k == IngredientKind.flavor ||
+    k == IngredientKind.additive ||
+    k == IngredientKind.thinner;
+
+/// How recipe percentages are interpreted.
+enum PercentMode { byVolume, byWeight }
+
+String percentModeLabel(PercentMode m) => switch (m) {
+  PercentMode.byVolume => 'By volume',
+  PercentMode.byWeight => 'By weight',
+};
+
+String percentModeHint(PercentMode m) => switch (m) {
+  PercentMode.byVolume =>
+    'A 10% flavor in a 30 mL batch means 3 mL. This is how ELR and most '
+        'shared recipes are written.',
+  PercentMode.byWeight =>
+    'A 10% flavor means 10% of the finished weight. Differs from volume '
+        'by up to ~20% on VG-heavy mixes.',
 };
 
 /// Brand shorthands seen in DIY recipes, mapped to full vendor names.
@@ -61,6 +115,11 @@ double? parseNum(String s) {
 }
 
 String money(double v, Settings s) => '${v.toStringAsFixed(2)} ${s.currency}';
+
+/// Snackbar timings. Plain confirmations vanish fast; anything with an undo
+/// action stays long enough to actually click it.
+const toastShort = Duration(milliseconds: 1500);
+const toastUndo = Duration(seconds: 5);
 
 class Ingredient {
   Ingredient({
@@ -132,7 +191,7 @@ class Ingredient {
     id: j['id'] as String,
     name: j['name'] as String,
     brand: j['brand'] as String? ?? '',
-    kind: IngredientKind.values[j['kind'] as int],
+    kind: kindFromIndex(j['kind'] as int),
     density: (j['density'] as num).toDouble(),
     bottleSizeMl: (j['bottleSizeMl'] as num?)?.toDouble() ?? 0,
     bottleCost: (j['bottleCost'] as num?)?.toDouble() ?? 0,
@@ -146,21 +205,24 @@ class Ingredient {
 
 class Settings {
   Settings({
-    this.pgDensity = 1.036,
-    this.vgDensity = 1.261,
-    this.flavorDensity = 1.036,
+    this.pgDensity = kPgDensity,
+    this.vgDensity = kVgDensity,
+    this.flavorDensity = kPgDensity,
+    this.thinnerDensity = kThinnerDensity,
     this.currency = 'USD',
     this.defaultVgPercent = 70,
     this.defaultBatchMl = 30,
     this.refBottleMl = 30,
     this.scaleResolution = 0.01,
-    this.tareEachStep = true,
+    this.tareEachStep = false,
     this.lowStockMl = 5,
+    this.defaultPercentMode = PercentMode.byVolume,
   });
 
   double pgDensity;
   double vgDensity;
   double flavorDensity;
+  double thinnerDensity; // distilled water ~1.0, PGA ~0.95
   String currency;
   double defaultVgPercent;
   double defaultBatchMl;
@@ -168,6 +230,7 @@ class Settings {
   double scaleResolution;
   bool tareEachStep;
   double lowStockMl;
+  PercentMode defaultPercentMode;
 
   /// Density implied by kind alone. Prefer [densityForCarrier].
   double densityFor(IngredientKind k) => densityForCarrier(k, 0);
@@ -181,6 +244,8 @@ class Settings {
       IngredientKind.vg => vgDensity,
       IngredientKind.nicotine => pgDensity * (1 - v) + vgDensity * v,
       IngredientKind.flavor => flavorDensity * (1 - v) + vgDensity * v,
+      IngredientKind.additive => flavorDensity * (1 - v) + vgDensity * v,
+      IngredientKind.thinner => thinnerDensity * (1 - v) + vgDensity * v,
     };
   }
 
@@ -188,6 +253,7 @@ class Settings {
     'pgDensity': pgDensity,
     'vgDensity': vgDensity,
     'flavorDensity': flavorDensity,
+    'thinnerDensity': thinnerDensity,
     'currency': currency,
     'defaultVgPercent': defaultVgPercent,
     'defaultBatchMl': defaultBatchMl,
@@ -195,19 +261,24 @@ class Settings {
     'scaleResolution': scaleResolution,
     'tareEachStep': tareEachStep,
     'lowStockMl': lowStockMl,
+    'defaultPercentMode': defaultPercentMode.index,
   };
 
   factory Settings.fromJson(Map<String, dynamic> j) => Settings(
-    pgDensity: (j['pgDensity'] as num?)?.toDouble() ?? 1.036,
-    vgDensity: (j['vgDensity'] as num?)?.toDouble() ?? 1.261,
-    flavorDensity: (j['flavorDensity'] as num?)?.toDouble() ?? 1.036,
+    pgDensity: (j['pgDensity'] as num?)?.toDouble() ?? kPgDensity,
+    vgDensity: (j['vgDensity'] as num?)?.toDouble() ?? kVgDensity,
+    flavorDensity: (j['flavorDensity'] as num?)?.toDouble() ?? kPgDensity,
+    thinnerDensity:
+        (j['thinnerDensity'] as num?)?.toDouble() ?? kThinnerDensity,
     currency: j['currency'] as String? ?? 'USD',
     defaultVgPercent: (j['defaultVgPercent'] as num?)?.toDouble() ?? 70,
     defaultBatchMl: (j['defaultBatchMl'] as num?)?.toDouble() ?? 30,
     refBottleMl: (j['refBottleMl'] as num?)?.toDouble() ?? 30,
     scaleResolution: (j['scaleResolution'] as num?)?.toDouble() ?? 0.01,
-    tareEachStep: j['tareEachStep'] as bool? ?? true,
+    tareEachStep: j['tareEachStep'] as bool? ?? false,
     lowStockMl: (j['lowStockMl'] as num?)?.toDouble() ?? 5,
+    defaultPercentMode:
+        PercentMode.values[(j['defaultPercentMode'] as num?)?.toInt() ?? 0],
   );
 }
 
@@ -243,6 +314,7 @@ class Recipe {
     this.batchMl = 30,
     this.targetNic = 3,
     this.targetVgPercent = 70,
+    this.percentMode = PercentMode.byVolume,
     List<RecipeFlavor>? flavors,
   }) : flavors = flavors ?? [];
 
@@ -252,8 +324,15 @@ class Recipe {
   double batchMl;
   double targetNic;
   double targetVgPercent;
+
+  /// How this recipe's percentages are meant to be read. Recipes written
+  /// before this existed are by volume, matching ELR convention.
+  PercentMode percentMode;
+
   final List<RecipeFlavor> flavors;
 
+  /// Sum of every listed percentage, including additives and thinners.
+  /// For the flavor-only figure use [MixResult.flavorPercentByVolume].
   double get totalFlavorPercent => flavors.fold(0.0, (a, f) => a + f.percent);
 
   Map<String, dynamic> toJson() => {
@@ -263,6 +342,7 @@ class Recipe {
     'batchMl': batchMl,
     'targetNic': targetNic,
     'targetVgPercent': targetVgPercent,
+    'percentMode': percentMode.index,
     'flavors': flavors.map((f) => f.toJson()).toList(),
   };
 
@@ -273,6 +353,7 @@ class Recipe {
     batchMl: (j['batchMl'] as num?)?.toDouble() ?? 30,
     targetNic: (j['targetNic'] as num?)?.toDouble() ?? 0,
     targetVgPercent: (j['targetVgPercent'] as num?)?.toDouble() ?? 70,
+    percentMode: PercentMode.values[(j['percentMode'] as num?)?.toInt() ?? 0],
     flavors: [
       for (final f in (j['flavors'] as List? ?? const []))
         RecipeFlavor.fromJson(f as Map<String, dynamic>),
@@ -340,6 +421,7 @@ class MixLine {
     this.grams,
     this.cost,
     this.ingredientId, {
+    this.kind = IngredientKind.flavor,
     this.vgFraction = 0,
     this.density = 1,
     this.costPerMl = 0,
@@ -351,6 +433,10 @@ class MixLine {
   final double grams;
   final double cost;
   final String? ingredientId;
+
+  /// Kept so flavor percentage can exclude additives and thinners.
+  final IngredientKind kind;
+
   final double vgFraction;
   final double density;
   final double costPerMl;
@@ -367,6 +453,7 @@ class MixLine {
       g,
       v * costPerMl,
       ingredientId,
+      kind: kind,
       vgFraction: vgFraction,
       density: density,
       costPerMl: costPerMl,
@@ -376,9 +463,14 @@ class MixLine {
 }
 
 class MixResult {
-  MixResult(this.lines, this.warnings);
+  MixResult(this.lines, this.warnings, {this.converged = true});
+
   final List<MixLine> lines;
   final List<String> warnings;
+
+  /// False when by-weight percentages failed to settle. Should not happen
+  /// in practice; surfaced rather than hidden.
+  final bool converged;
 
   double get totalMl => lines.fold(0.0, (a, l) => a + l.ml);
   double get totalGrams => lines.fold(0.0, (a, l) => a + l.grams);
@@ -399,6 +491,36 @@ class MixResult {
     final mg = lines.fold(0.0, (a, l) => a + l.ml * l.nicMgPerMl);
     return mg / t;
   }
+
+  double _sum(bool Function(MixLine) where, double Function(MixLine) pick) =>
+      lines.fold(0.0, (a, l) => where(l) ? a + pick(l) : a);
+
+  /// Flavor only — additives and thinners are excluded, which is the number
+  /// mixers actually mean by "total flavor".
+  double get flavorPercentByVolume {
+    final t = totalMl;
+    if (t <= 0) return 0;
+    return _sum((l) => l.kind == IngredientKind.flavor, (l) => l.ml) / t * 100;
+  }
+
+  double get flavorPercentByWeight {
+    final t = totalGrams;
+    if (t <= 0) return 0;
+    return _sum((l) => l.kind == IngredientKind.flavor, (l) => l.grams) /
+        t *
+        100;
+  }
+
+  double get additivePercentByVolume {
+    final t = totalMl;
+    if (t <= 0) return 0;
+    return _sum((l) => l.kind == IngredientKind.additive, (l) => l.ml) /
+        t *
+        100;
+  }
+
+  bool get hasAdditives => lines.any((l) => l.kind == IngredientKind.additive);
+  bool get hasThinners => lines.any((l) => l.kind == IngredientKind.thinner);
 }
 
 /// Ordered plan for weighing a mix, lightest first so small flavor amounts
@@ -484,9 +606,8 @@ class StepPlan {
     final out = <String>[];
     if (tooSmall.isNotEmpty) {
       out.add(
-        'Below your ${resolution}g scale resolution: '
-        '${tooSmall.join(', ')}. Mix a larger batch or use a syringe '
-        'for these.',
+        'Below your ${resolution}g scale resolution: ${tooSmall.join(', ')}. '
+        'Mix a larger batch or use a syringe for these.',
       );
     }
     if (imprecise.isNotEmpty) {
@@ -701,60 +822,35 @@ class MixLog {
 
 /// Weight-first mixing math. Volumes are computed, then converted to grams.
 ///
-/// Flavors selected more than once are coalesced into a single line with
+/// [flavors] accepts any percentage-based ingredient — flavors, additives
+/// and thinners alike. Each line's kind is preserved so the flavor total can
+/// exclude the ones that are not flavor.
+///
+/// In [PercentMode.byWeight], a percentage is a share of the finished mass
+/// rather than the batch volume. Because the finished mass depends on the
+/// concentrate amounts, which depend on the mass, this is solved by
+/// fixed-point iteration. The map is a strong contraction (the derivative is
+/// roughly `Σpᵢ(1 − ρbase/ρᵢ)/100`, well under 1 for realistic densities), so
+/// it settles in a handful of passes.
+///
+/// Ingredients selected more than once are coalesced into a single line with
 /// their percentages summed, so one bottle is never weighed twice.
 MixResult calculateMix({
   required double amountMl,
   required double targetNic,
   required double targetVgPercent,
   required Settings settings,
+  PercentMode percentMode = PercentMode.byVolume,
   Ingredient? nic,
   Ingredient? pg,
   Ingredient? vg,
   List<(Ingredient, double)> flavors = const [],
 }) {
-  final lines = <MixLine>[];
-  final warnings = <String>[];
   if (amountMl <= 0) {
-    return MixResult(lines, const ['Enter a batch size above zero.']);
+    return MixResult(const [], const ['Enter a batch size above zero.']);
   }
 
-  var vgMl = amountMl * clampd(targetVgPercent, 0, 100) / 100;
-  var pgMl = amountMl - vgMl;
-
-  if (targetNic > 0) {
-    if (nic == null || nic.nicStrength <= 0) {
-      warnings.add(
-        'Target nicotine is ${targetNic.toStringAsFixed(1)} mg/mL '
-        'but no nicotine base is selected — this mix will be 0 mg.',
-      );
-    } else if (targetNic >= nic.nicStrength) {
-      warnings.add(
-        'Target strength must be below the base strength '
-        '(${nic.nicStrength.toStringAsFixed(0)} mg/mL).',
-      );
-    } else {
-      final ml = amountMl * targetNic / nic.nicStrength;
-      final carrier = clampd(nic.carrierVg, 0, 1);
-      vgMl -= ml * carrier;
-      pgMl -= ml * (1 - carrier);
-      lines.add(
-        MixLine(
-          nic.displayName,
-          ml,
-          ml * nic.density,
-          ml * nic.costPerMl,
-          nic.id,
-          vgFraction: carrier,
-          density: nic.density,
-          costPerMl: nic.costPerMl,
-          nicMgPerMl: nic.nicStrength,
-        ),
-      );
-    }
-  }
-
-  // Coalesce repeated selections of the same ingredient.
+  // Coalesce repeated selections, preserving first-seen order.
   final merged = <String, (Ingredient, double)>{};
   final order = <String>[];
   var hadDuplicates = false;
@@ -769,90 +865,171 @@ MixResult calculateMix({
       hadDuplicates = true;
     }
   }
-  if (hadDuplicates) {
-    warnings.add('Duplicate flavors were combined into one line each.');
-  }
 
-  var flavorPct = 0.0;
-  for (final id in order) {
-    final (f, pct) = merged[id]!;
-    flavorPct += pct;
-    final ml = amountMl * pct / 100;
-    final carrier = clampd(f.carrierVg, 0, 1);
-    vgMl -= ml * carrier;
-    pgMl -= ml * (1 - carrier);
+  /// Builds the mix given an assumed finished mass, which is only consulted
+  /// in by-weight mode.
+  MixResult attempt(double assumedGrams) {
+    final lines = <MixLine>[];
+    final warnings = <String>[];
+
+    var vgMl = amountMl * clampd(targetVgPercent, 0, 100) / 100;
+    var pgMl = amountMl - vgMl;
+
+    if (targetNic > 0) {
+      if (nic == null || nic.nicStrength <= 0) {
+        warnings.add(
+          'Target nicotine is ${targetNic.toStringAsFixed(1)} mg/mL but no '
+          'nicotine base is selected — this mix will be 0 mg.',
+        );
+      } else if (targetNic >= nic.nicStrength) {
+        warnings.add(
+          'Target strength must be below the base strength '
+          '(${nic.nicStrength.toStringAsFixed(0)} mg/mL).',
+        );
+      } else {
+        // Nicotine is inherently volumetric: mg/mL of the finished volume.
+        final ml = amountMl * targetNic / nic.nicStrength;
+        final carrier = clampd(nic.carrierVg, 0, 1);
+        vgMl -= ml * carrier;
+        pgMl -= ml * (1 - carrier);
+        lines.add(
+          MixLine(
+            nic.displayName,
+            ml,
+            ml * nic.density,
+            ml * nic.costPerMl,
+            nic.id,
+            kind: IngredientKind.nicotine,
+            vgFraction: carrier,
+            density: nic.density,
+            costPerMl: nic.costPerMl,
+            nicMgPerMl: nic.nicStrength,
+          ),
+        );
+      }
+    }
+
+    if (hadDuplicates) {
+      warnings.add('Duplicate ingredients were combined into one line each.');
+    }
+
+    var totalPct = 0.0;
+    for (final id in order) {
+      final (f, pct) = merged[id]!;
+      totalPct += pct;
+      final density = f.density > 0 ? f.density : 1.0;
+      final ml = percentMode == PercentMode.byWeight
+          ? assumedGrams * pct / 100 / density
+          : amountMl * pct / 100;
+      final carrier = clampd(f.carrierVg, 0, 1);
+      vgMl -= ml * carrier;
+      pgMl -= ml * (1 - carrier);
+      lines.add(
+        MixLine(
+          f.displayName,
+          ml,
+          ml * density,
+          ml * f.costPerMl,
+          f.id,
+          kind: f.kind,
+          vgFraction: carrier,
+          density: density,
+          costPerMl: f.costPerMl,
+          nicMgPerMl: f.nicStrength,
+        ),
+      );
+    }
+    if (totalPct > 100) {
+      warnings.add(
+        'Listed ingredients total ${totalPct.toStringAsFixed(1)}% — '
+        'over 100%.',
+      );
+    }
+
+    const eps = 1e-12;
+    if (pgMl < -eps || vgMl < -eps) {
+      // Absorb the overflow from the opposite side to keep total volume
+      // equal to the requested batch size.
+      if (pgMl < 0) {
+        vgMl += pgMl;
+        pgMl = 0;
+      } else {
+        pgMl += vgMl;
+        vgMl = 0;
+      }
+      if (pgMl < -eps || vgMl < -eps) {
+        warnings.add(
+          'Nicotine and concentrates alone exceed '
+          '${amountMl.toStringAsFixed(1)} mL — the finished mix will be '
+          'larger than the requested batch.',
+        );
+      } else {
+        warnings.add(
+          'Concentrates carry in more PG/VG than the target ratio allows; '
+          'the finished ratio will differ from the target.',
+        );
+      }
+      pgMl = clampd(pgMl, 0, double.infinity);
+      vgMl = clampd(vgMl, 0, double.infinity);
+    }
+
+    final pgD = pg?.density ?? settings.pgDensity;
+    final vgD = vg?.density ?? settings.vgDensity;
     lines.add(
       MixLine(
-        f.displayName,
-        ml,
-        ml * f.density,
-        ml * f.costPerMl,
-        f.id,
-        vgFraction: carrier,
-        density: f.density,
-        costPerMl: f.costPerMl,
-        nicMgPerMl: f.nicStrength,
+        pg?.displayName ?? 'PG',
+        pgMl,
+        pgMl * pgD,
+        pgMl * (pg?.costPerMl ?? 0),
+        pg?.id,
+        kind: IngredientKind.pg,
+        vgFraction: 0,
+        density: pgD,
+        costPerMl: pg?.costPerMl ?? 0,
       ),
     );
-  }
-  if (flavorPct > 100) {
-    warnings.add(
-      'Flavor total is ${flavorPct.toStringAsFixed(1)}% — '
-      'over 100%.',
+    lines.add(
+      MixLine(
+        vg?.displayName ?? 'VG',
+        vgMl,
+        vgMl * vgD,
+        vgMl * (vg?.costPerMl ?? 0),
+        vg?.id,
+        kind: IngredientKind.vg,
+        vgFraction: 1,
+        density: vgD,
+        costPerMl: vg?.costPerMl ?? 0,
+      ),
     );
+
+    return MixResult(lines, warnings);
   }
 
-  const eps = 1e-12;
-  if (pgMl < -eps || vgMl < -eps) {
-    if (pgMl < 0) {
-      vgMl += pgMl;
-      pgMl = 0;
-    } else {
-      pgMl += vgMl;
-      vgMl = 0;
-    }
-    if (pgMl < -eps || vgMl < -eps) {
-      warnings.add(
-        'Nicotine and flavors alone exceed '
-        '${amountMl.toStringAsFixed(1)} mL — the finished mix will be '
-        'larger than the requested batch.',
-      );
-    } else {
-      warnings.add(
-        'Concentrates carry in more PG/VG than the target ratio '
-        'allows; the finished ratio will differ from the target.',
-      );
-    }
-    pgMl = clampd(pgMl, 0, double.infinity);
-    vgMl = clampd(vgMl, 0, double.infinity);
+  if (percentMode == PercentMode.byVolume || order.isEmpty) {
+    return attempt(0);
   }
 
-  final pgD = pg?.density ?? settings.pgDensity;
-  final vgD = vg?.density ?? settings.vgDensity;
-  lines.add(
-    MixLine(
-      pg?.displayName ?? 'PG',
-      pgMl,
-      pgMl * pgD,
-      pgMl * (pg?.costPerMl ?? 0),
-      pg?.id,
-      vgFraction: 0,
-      density: pgD,
-      costPerMl: pg?.costPerMl ?? 0,
-    ),
-  );
-  lines.add(
-    MixLine(
-      vg?.displayName ?? 'VG',
-      vgMl,
-      vgMl * vgD,
-      vgMl * (vg?.costPerMl ?? 0),
-      vg?.id,
-      vgFraction: 1,
-      density: vgD,
-      costPerMl: vg?.costPerMl ?? 0,
-    ),
-  );
+  // Fixed-point solve for the finished mass.
+  var mass = amountMl * 1.15; // between PG and VG density, a good seed
+  var result = attempt(mass);
+  var converged = false;
+  for (var i = 0; i < 32; i++) {
+    final next = result.totalGrams;
+    if ((next - mass).abs() < 1e-9) {
+      converged = true;
+      break;
+    }
+    mass = next;
+    result = attempt(mass);
+  }
+  if (!converged && (result.totalGrams - mass).abs() < 1e-6) {
+    converged = true;
+  }
 
-  return MixResult(lines, warnings);
+  return MixResult(result.lines, [
+    ...result.warnings,
+    if (!converged)
+      'By-weight percentages did not settle; treat these amounts as '
+          'approximate.',
+  ], converged: converged);
 }

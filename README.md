@@ -47,10 +47,10 @@ Rough positioning first:
 | Achieved PG/VG shown vs target | Yes | No | Partial | No | Yes |
 | Achieved nicotine recalculated after weighing | Yes | No | No | No | No |
 | Batch volume preserved when concentrates overrun the ratio | Yes | No | Varies | Varies | Varies |
-| Percent by weight instead of volume | No | No | Yes | No | Yes |
+| Percent by weight instead of volume | Yes | No | Yes | No | Yes |
 | Max-VG mode | No | Yes | Yes | Yes | Yes |
 | Nicotine salts and mg/g bases | No | No | Yes | Partial | Yes |
-| Additives excluded from flavor percentage | No | No | Yes | Yes | No |
+| Additives excluded from flavor percentage | Yes | No | Yes | Yes | No |
 
 ### At the scale
 
