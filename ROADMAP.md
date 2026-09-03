@@ -29,7 +29,7 @@ DIY, not all of it.
       mixes, so the mode must be explicit and visible, never inferred.
       The README currently claims "weight-first" while percentages are
       volume-based — this closes that gap.
-- [ ] **Max-VG mode.** No PG beyond what concentrates carry in. A large
+- [x] **Max-VG mode.** No PG beyond what concentrates carry in. A large
       share of mixers work this way and it is currently inexpressible.
 - [x] **Additive and thinner ingredient kinds.** Sucralose, WS-23, EM
       and distilled water behave like flavors but should not count
@@ -60,7 +60,7 @@ liquid.
 The biggest reach item. MixLab has no recipe community and does not need
 one, but it should interoperate with the places that do.
 
-- [ ] **Paste import from ELR and AllTheFlavors.** Line-oriented, so a
+- [x] **Paste import from ELR and AllTheFlavors.** Line-oriented, so a
       text parser gets most of the way. Brand matching against inventory
       is already tractable thanks to the `brand` field.
 - [ ] **URL import** for the same sites, if the paste parser proves out.

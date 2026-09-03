@@ -15,8 +15,8 @@ class CalculatorPage extends StatefulWidget {
   State<CalculatorPage> createState() => _CalculatorPageState();
 }
 
-/// One percentage-based row. Holds its kind so the picker can filter and
-/// so additives and thinners can be excluded from the flavor total.
+/// One percentage-based row. Holds its kind so the picker can filter and so
+/// additives and thinners can be excluded from the flavor total.
 class _ConcentrateEntry {
   _ConcentrateEntry(this.kind, {this.ingredientId, String percent = ''})
     : percent = TextEditingController(text: percent);
@@ -43,6 +43,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
   String? _loadedRecipeId;
   int _seenRecipeToken = 0;
   late PercentMode _percentMode;
+  late BaseMode _baseMode;
 
   AppState get s => widget.state;
 
@@ -54,6 +55,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
     _nic = TextEditingController(text: '3');
     _vg = TextEditingController(text: set.defaultVgPercent.toStringAsFixed(0));
     _percentMode = set.defaultPercentMode;
+    _baseMode = BaseMode.ratio;
 
     for (final c in [_batch, _nic, _vg]) {
       c.addListener(_rebuild);
@@ -103,6 +105,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
     _vg.text = _fmt(r.targetVgPercent);
     _label = r.name;
     _percentMode = r.percentMode;
+    _baseMode = r.baseMode;
     _loadedRecipeId = r.id.startsWith('remix:') ? null : r.id;
 
     for (final e in _rows) {
@@ -145,6 +148,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
       targetVgPercent: _val(_vg),
       settings: s.settings,
       percentMode: _percentMode,
+      baseMode: _baseMode,
       nic: nic,
       pg: pg,
       vg: vg,
@@ -192,6 +196,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
     final vg = s.byId(_vgId) ?? s.firstOfKind(IngredientKind.vg);
     final loaded = _loadedRecipe;
     final listedTotal = _rows.fold(0.0, (a, e) => a + _val(e.percent));
+    final isMaxVg = _baseMode == BaseMode.maxVg;
 
     return Card(
       child: Padding(
@@ -199,6 +204,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // Header, with the loaded-recipe chip and an editor shortcut.
             Row(
               children: [
                 Expanded(
@@ -227,19 +233,28 @@ class _CalculatorPageState extends State<CalculatorPage> {
             ),
             const SizedBox(height: 12),
 
-            // Batch, nicotine, ratio.
+            // Batch size, nicotine target, ratio target.
             Row(
               children: [
                 Expanded(child: _numField(_batch, 'Batch size (mL)')),
                 const SizedBox(width: 8),
                 Expanded(child: _numField(_nic, 'Target nic (mg/mL)')),
                 const SizedBox(width: 8),
-                Expanded(child: _numField(_vg, 'Target VG %')),
+                Expanded(
+                  child: _numField(
+                    _vg,
+                    'Target VG %',
+                    enabled: !isMaxVg,
+                    // Max VG ignores the target entirely, so show what the
+                    // mix will actually land at rather than a stale number.
+                    hint: isMaxVg ? 'set by mix' : null,
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 12),
 
-            // Base ingredients.
+            // Base ingredients. Each picker can create inline.
             IngredientPickerField(
               label: 'Nicotine base',
               items: s.ofKind(IngredientKind.nicotine),
@@ -247,7 +262,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
               settings: s.settings,
               state: s,
               createKind: IngredientKind.nicotine,
-              emptyHint: 'No nicotine bases yet',
+              emptyHint: 'No nicotine bases yet — search a name and create it',
               onSelected: (id) => setState(() => _nicId = id),
             ),
             const SizedBox(height: 8),
@@ -282,7 +297,29 @@ class _CalculatorPageState extends State<CalculatorPage> {
             ),
             const SizedBox(height: 20),
 
-            // Percentage mode.
+            // How the base is allocated.
+            Text('Base', style: theme.textTheme.titleSmall),
+            const SizedBox(height: 6),
+            SegmentedButton<BaseMode>(
+              segments: [
+                for (final m in BaseMode.values)
+                  ButtonSegment(value: m, label: Text(baseModeLabel(m))),
+              ],
+              selected: {_baseMode},
+              onSelectionChanged: (v) => setState(() => _baseMode = v.first),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                baseModeHint(_baseMode),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.outline,
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // How percentages are interpreted.
             Text('Percentages are', style: theme.textTheme.titleSmall),
             const SizedBox(height: 6),
             SegmentedButton<PercentMode>(
@@ -294,7 +331,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
               onSelectionChanged: (v) => setState(() => _percentMode = v.first),
             ),
             Padding(
-              padding: const EdgeInsets.only(top: 4, bottom: 12),
+              padding: const EdgeInsets.only(top: 4, bottom: 16),
               child: Text(
                 percentModeHint(_percentMode),
                 style: theme.textTheme.bodySmall?.copyWith(
@@ -357,11 +394,18 @@ class _CalculatorPageState extends State<CalculatorPage> {
     );
   }
 
-  Widget _numField(TextEditingController c, String label) => TextField(
+  Widget _numField(
+    TextEditingController c,
+    String label, {
+    bool enabled = true,
+    String? hint,
+  }) => TextField(
     controller: c,
+    enabled: enabled,
     keyboardType: const TextInputType.numberWithOptions(decimal: true),
     decoration: InputDecoration(
       labelText: label,
+      hintText: hint,
       border: const OutlineInputBorder(),
       isDense: true,
       errorText: _bad(c) ? 'Number?' : null,
@@ -423,7 +467,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
                   MenuItemButton(
                     onPressed: () => setState(() {
                       e.kind = k;
-                      // The old selection may not belong to the new kind.
+                      // The current selection may not belong to the new kind.
                       if (s.byId(e.ingredientId)?.kind != k) {
                         e.ingredientId = null;
                       }
@@ -509,6 +553,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
     final theme = Theme.of(context);
     final ref = set.refBottleMl <= 0 ? 30.0 : set.refBottleMl;
     final loaded = _loadedRecipe;
+    final isMaxVg = _baseMode == BaseMode.maxVg;
 
     return Card(
       child: Padding(
@@ -516,7 +561,31 @@ class _CalculatorPageState extends State<CalculatorPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('Mix by weight', style: theme.textTheme.titleLarge),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Mix by weight',
+                    style: theme.textTheme.titleLarge,
+                  ),
+                ),
+                if (isMaxVg)
+                  Chip(
+                    label: const Text('Max VG'),
+                    visualDensity: VisualDensity.compact,
+                    backgroundColor: theme.colorScheme.secondaryContainer,
+                  ),
+                if (_percentMode == PercentMode.byWeight)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 6),
+                    child: Chip(
+                      label: const Text('By weight'),
+                      visualDensity: VisualDensity.compact,
+                      backgroundColor: theme.colorScheme.tertiaryContainer,
+                    ),
+                  ),
+              ],
+            ),
             const SizedBox(height: 12),
             Table(
               columnWidths: const {
@@ -769,6 +838,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
         targetNic: _val(_nic),
         targetVgPercent: _val(_vg),
         percentMode: _percentMode,
+        baseMode: _baseMode,
         flavors: _currentFlavors(),
       ),
     );
@@ -811,7 +881,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
               const SizedBox(height: 8),
               Text(
                 'Saved as ${percentModeLabel(_percentMode).toLowerCase()} '
-                'percentages.',
+                'percentages, ${baseModeLabel(_baseMode).toLowerCase()} base.',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ],
@@ -835,6 +905,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
                 targetNic: _val(_nic),
                 targetVgPercent: _val(_vg),
                 percentMode: _percentMode,
+                baseMode: _baseMode,
                 flavors: _currentFlavors(),
               ),
             ),

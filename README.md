@@ -4,7 +4,7 @@ A weight-first e-liquid calculator with inventory, cost tracking, and a
 guided weigh-along mode. Cross-platform desktop and mobile, built with
 Flutter. All data stays on your machine.
 
-Status: `v0.1.0-beta.1` — usable, but the schema is young and the builds
+The schema is young and the builds
 are unsigned. Export a backup before upgrading.
 
 ## Why another one
@@ -48,7 +48,7 @@ Rough positioning first:
 | Achieved nicotine recalculated after weighing | Yes | No | No | No | No |
 | Batch volume preserved when concentrates overrun the ratio | Yes | No | Varies | Varies | Varies |
 | Percent by weight instead of volume | Yes | No | Yes | No | Yes |
-| Max-VG mode | No | Yes | Yes | Yes | Yes |
+| Max-VG mode | Yes | Yes | Yes | Yes | Yes |
 | Nicotine salts and mg/g bases | No | No | Yes | Partial | Yes |
 | Additives excluded from flavor percentage | Yes | No | Yes | Yes | No |
 

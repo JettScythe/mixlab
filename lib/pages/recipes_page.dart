@@ -5,6 +5,7 @@ import '../models.dart';
 import '../state.dart';
 import 'recipe_editor_page.dart';
 import 'recipe_detail_page.dart';
+import 'import_page.dart';
 
 enum _Sort { name, flavorCount, flavorPercent, nicotine }
 
@@ -99,6 +100,19 @@ class _RecipesPageState extends State<RecipesPage> {
               Expanded(
                 child: Text('Recipes', style: theme.textTheme.headlineSmall),
               ),
+              OutlinedButton.icon(
+                onPressed: () async {
+                  final r = await Navigator.of(context).push<Recipe>(
+                    MaterialPageRoute(
+                      builder: (_) => ImportRecipePage(state: state),
+                    ),
+                  );
+                  if (r != null && context.mounted) setState(() {});
+                },
+                icon: const Icon(Icons.content_paste_go),
+                label: const Text('Import'),
+              ),
+              const SizedBox(width: 8),
               FilledButton.icon(
                 onPressed: () => _openEditor(null),
                 icon: const Icon(Icons.add),

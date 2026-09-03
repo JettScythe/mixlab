@@ -23,7 +23,7 @@ class AppState extends ChangeNotifier {
   static const _kRecipes = 'recipes_v1';
   static const _kMixLog = 'mixlog_v1';
   static const _kPurchases = 'purchases_v1';
-  static const currentSchema = 5;
+  static const currentSchema = 6;
 
   static const _allKeys = [
     _kSchema,
@@ -223,6 +223,11 @@ class AppState extends ChangeNotifier {
         }
       }
       v = 5;
+    }
+    if (v < 6) {
+      // v6 adds Recipe.baseMode. Existing recipes were mixed to their
+      // stored ratio, which is the default, so no transform is needed.
+      v = 6;
     }
     await prefs.setInt(_kSchema, v);
   }

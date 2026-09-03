@@ -6,6 +6,7 @@ import 'package:mixlab/models.dart';
 import 'package:mixlab/state.dart';
 import 'package:mixlab/widgets/ingredient_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:mixlab/recipe_import.dart';
 
 Ingredient nicBase({double strength = 100, double carrierVg = 0}) => Ingredient(
   id: 'nic',
@@ -1273,6 +1274,250 @@ void main() {
       s.rateMix(b.id, rating: 2);
       expect(s.averageRatingForRecipe('r1'), 3.5);
       expect(s.mixCountForRecipe('r1'), 3);
+    });
+  });
+  group('max VG', () {
+    test('adds no neat PG and fills with VG', () {
+      final f = flavor('a');
+      final r = calculateMix(
+        amountMl: 30,
+        targetNic: 3,
+        targetVgPercent: 70, // ignored
+        settings: Settings(),
+        baseMode: BaseMode.maxVg,
+        nic: nicBase(), // PG-carried, 0.9 mL
+        flavors: [(f, 10)], // 3 mL
+      );
+      expect(r.lines.firstWhere((l) => l.name == 'PG').ml, 0);
+      expect(
+        r.lines.firstWhere((l) => l.name == 'VG').ml,
+        closeTo(30 - 0.9 - 3, 1e-9),
+      );
+      expect(r.totalMl, closeTo(30, 1e-9));
+      expect(r.warnings, isEmpty);
+    });
+
+    test('achieved ratio reflects carrier PG only', () {
+      final r = calculateMix(
+        amountMl: 100,
+        targetNic: 0,
+        targetVgPercent: 50,
+        settings: Settings(),
+        baseMode: BaseMode.maxVg,
+        flavors: [(flavor('a'), 10)], // PG-carried
+      );
+      expect(r.actualVgPercent, closeTo(90, 1e-9));
+    });
+
+    test('VG-carried concentrates give a full 100% VG mix', () {
+      final r = calculateMix(
+        amountMl: 100,
+        targetNic: 0,
+        targetVgPercent: 50,
+        settings: Settings(),
+        baseMode: BaseMode.maxVg,
+        flavors: [(flavor('a', carrierVg: 1), 10)],
+      );
+      expect(r.actualVgPercent, closeTo(100, 1e-9));
+    });
+
+    test('warns and clamps when concentrates exceed the batch', () {
+      final r = calculateMix(
+        amountMl: 10,
+        targetNic: 0,
+        targetVgPercent: 50,
+        settings: Settings(),
+        baseMode: BaseMode.maxVg,
+        flavors: [(flavor('a'), 60), (flavor('b'), 60)],
+      );
+      expect(r.lines.firstWhere((l) => l.name == 'VG').ml, 0);
+      expect(r.warnings.any((w) => w.contains('larger than')), isTrue);
+    });
+
+    test('ratio mode is unaffected', () {
+      final r = calculateMix(
+        amountMl: 30,
+        targetNic: 0,
+        targetVgPercent: 70,
+        settings: Settings(),
+        flavors: [(flavor('a'), 10)],
+      );
+      expect(r.lines.firstWhere((l) => l.name == 'PG').ml, greaterThan(0));
+    });
+
+    test('baseMode round-trips and defaults to ratio', () {
+      final r = Recipe(id: 'r', name: 'M', baseMode: BaseMode.maxVg);
+      final back = Recipe.fromJson(
+        jsonDecode(jsonEncode(r.toJson())) as Map<String, dynamic>,
+      );
+      expect(back.baseMode, BaseMode.maxVg);
+      expect(
+        Recipe.fromJson({'id': 'x', 'name': 'Old'}).baseMode,
+        BaseMode.ratio,
+      );
+    });
+  });
+
+  group('recipe text import', () {
+    test('percent-prefix with brand shorthand', () {
+      final p = parseRecipeText('''
+Mustard Milk
+8% TFA Strawberry (Ripe)
+6% TFA Vanilla Bean Ice Cream
+''');
+      expect(p.name, 'Mustard Milk');
+      expect(p.lines.length, 2);
+      expect(p.lines[0].brand, 'TFA');
+      expect(p.lines[0].name, 'Strawberry (Ripe)');
+      expect(p.lines[0].percent, 8);
+      expect(p.totalPercent, 14);
+    });
+
+    test('trailing vendor in parentheses, TPA aliased to TFA', () {
+      final p = parseRecipeText('''
+8% Strawberry (Ripe) (TPA)
+2.5% Bavarian Cream (TPA)
+''');
+      expect(p.lines[0].brand, 'TFA');
+      expect(p.lines[0].name, 'Strawberry (Ripe)');
+      expect(p.lines[1].percent, 2.5);
+      expect(p.lines[1].name, 'Bavarian Cream');
+    });
+
+    test('tab-separated columns', () {
+      final p = parseRecipeText(
+        'Strawberry (Ripe)\tTPA\t8\nVanilla Bean Ice Cream\tTPA\t6',
+      );
+      expect(p.lines.length, 2);
+      expect(p.lines[0].brand, 'TFA');
+      expect(p.lines[0].name, 'Strawberry (Ripe)');
+      expect(p.lines[0].percent, 8);
+    });
+
+    test('name first with trailing percent', () {
+      final p = parseRecipeText('CAP Sweet Cream 2%');
+      expect(p.lines.single.brand, 'CAP');
+      expect(p.lines.single.name, 'Sweet Cream');
+      expect(p.lines.single.percent, 2);
+    });
+
+    test('picks up batch size, nicotine and ratio', () {
+      final p = parseRecipeText('''
+30ml
+70/30 VG/PG
+3mg
+8% TFA Strawberry (Ripe)
+''');
+      expect(p.batchMl, 30);
+      expect(p.nic, 3);
+      expect(p.vgPercent, 70);
+      expect(p.lines.length, 1);
+    });
+
+    test('detects max VG', () {
+      final p = parseRecipeText('Max VG\n10% TFA Fruit Circles');
+      expect(p.maxVg, isTrue);
+      expect(p.lines.length, 1);
+    });
+
+    test('comma decimals and unrecognised vendors survive', () {
+      final p = parseRecipeText('1,5% Some Vendor Mystery Flavor');
+      expect(p.lines.single.percent, 1.5);
+      expect(p.lines.single.brand, '');
+      expect(p.lines.single.name, 'Some Vendor Mystery Flavor');
+    });
+
+    test('noise lines are skipped, junk is reported not dropped', () {
+      final p = parseRecipeText('''
+Flavor	Vendor	Percentage
+https://alltheflavors.com/recipes/1234
+8% TFA Strawberry (Ripe)
+some line with no numbers at all
+''');
+      expect(p.lines.length, 1);
+      expect(p.ignored.length, 1);
+      expect(p.ignored.single.contains('no numbers'), isTrue);
+    });
+
+    test('canonicalBrand handles aliases and full names', () {
+      expect(canonicalBrand('tpa'), 'TFA');
+      expect(canonicalBrand('Capella'), 'CAP');
+      expect(canonicalBrand('T.F.A.'), 'TFA');
+      expect(canonicalBrand('Nonsense'), '');
+    });
+  });
+
+  group('import matching', () {
+    test('matches on brand and name, ignoring punctuation and case', () {
+      final inv = [
+        Ingredient(
+          id: 'a',
+          name: 'Strawberry (Ripe)',
+          brand: 'TFA',
+          kind: IngredientKind.flavor,
+          density: 1,
+        ),
+      ];
+      final line = parseRecipeText('8% strawberry ripe (TPA)').lines.single;
+      expect(matchParsedLine(line, inv)?.id, 'a');
+    });
+
+    test('falls back to a unique name match across brands', () {
+      final inv = [
+        Ingredient(
+          id: 'a',
+          name: 'Sweet Cream',
+          brand: 'CAP',
+          kind: IngredientKind.flavor,
+          density: 1,
+        ),
+      ];
+      final line = parseRecipeText('2% Sweet Cream').lines.single;
+      expect(matchParsedLine(line, inv)?.id, 'a');
+    });
+
+    test('refuses an ambiguous name match', () {
+      final inv = [
+        Ingredient(
+          id: 'a',
+          name: 'Vanilla',
+          brand: 'CAP',
+          kind: IngredientKind.flavor,
+          density: 1,
+        ),
+        Ingredient(
+          id: 'b',
+          name: 'Vanilla',
+          brand: 'TFA',
+          kind: IngredientKind.flavor,
+          density: 1,
+        ),
+      ];
+      final line = parseRecipeText('2% Vanilla').lines.single;
+      expect(matchParsedLine(line, inv), isNull);
+    });
+
+    test('bases are read as metadata, not ingredients', () {
+      expect(parseRecipeText('50% VG').lines, isEmpty);
+      expect(parseRecipeText('50% VG').vgPercent, 50);
+    });
+
+    test('matching ignores non-concentrate kinds', () {
+      final inv = [
+        Ingredient(
+          id: 'v',
+          name: 'Menthol',
+          kind: IngredientKind.vg, // deliberately wrong kind
+          density: 1,
+        ),
+      ];
+      final line = parseRecipeText('2% Menthol').lines.single;
+      expect(matchParsedLine(line, inv), isNull);
+    });
+    test('a header word inside an ingredient name is not noise', () {
+      final p = parseRecipeText('1,5% Some Vendor Mystery Flavor');
+      expect(p.lines.single.percent, 1.5);
+      expect(p.ignored, isEmpty);
     });
   });
 }

@@ -47,6 +47,21 @@ bool isConcentrate(IngredientKind k) =>
 /// How recipe percentages are interpreted.
 enum PercentMode { byVolume, byWeight }
 
+/// How the PG/VG base is allocated.
+enum BaseMode { ratio, maxVg }
+
+String baseModeLabel(BaseMode m) => switch (m) {
+  BaseMode.ratio => 'Target ratio',
+  BaseMode.maxVg => 'Max VG',
+};
+
+String baseModeHint(BaseMode m) => switch (m) {
+  BaseMode.ratio => 'Add PG and VG to hit a chosen PG/VG split.',
+  BaseMode.maxVg =>
+    'Add no neat PG at all. VG fills whatever the nicotine and '
+        'concentrates leave, so the final ratio is whatever it works out to.',
+};
+
 String percentModeLabel(PercentMode m) => switch (m) {
   PercentMode.byVolume => 'By volume',
   PercentMode.byWeight => 'By weight',
@@ -315,6 +330,7 @@ class Recipe {
     this.targetNic = 3,
     this.targetVgPercent = 70,
     this.percentMode = PercentMode.byVolume,
+    this.baseMode = BaseMode.ratio,
     List<RecipeFlavor>? flavors,
   }) : flavors = flavors ?? [];
 
@@ -328,6 +344,11 @@ class Recipe {
   /// How this recipe's percentages are meant to be read. Recipes written
   /// before this existed are by volume, matching ELR convention.
   PercentMode percentMode;
+
+  /// Whether [targetVgPercent] is honoured or ignored in favour of max VG.
+  /// Recipes written before this existed use the ratio, matching how they
+  /// were originally mixed.
+  BaseMode baseMode;
 
   final List<RecipeFlavor> flavors;
 
@@ -343,6 +364,7 @@ class Recipe {
     'targetNic': targetNic,
     'targetVgPercent': targetVgPercent,
     'percentMode': percentMode.index,
+    'baseMode': baseMode.index,
     'flavors': flavors.map((f) => f.toJson()).toList(),
   };
 
@@ -354,6 +376,7 @@ class Recipe {
     targetNic: (j['targetNic'] as num?)?.toDouble() ?? 0,
     targetVgPercent: (j['targetVgPercent'] as num?)?.toDouble() ?? 70,
     percentMode: PercentMode.values[(j['percentMode'] as num?)?.toInt() ?? 0],
+    baseMode: BaseMode.values[(j['baseMode'] as num?)?.toInt() ?? 0],
     flavors: [
       for (final f in (j['flavors'] as List? ?? const []))
         RecipeFlavor.fromJson(f as Map<String, dynamic>),
@@ -841,6 +864,7 @@ MixResult calculateMix({
   required double targetVgPercent,
   required Settings settings,
   PercentMode percentMode = PercentMode.byVolume,
+  BaseMode baseMode = BaseMode.ratio,
   Ingredient? nic,
   Ingredient? pg,
   Ingredient? vg,
@@ -872,8 +896,13 @@ MixResult calculateMix({
     final lines = <MixLine>[];
     final warnings = <String>[];
 
-    var vgMl = amountMl * clampd(targetVgPercent, 0, 100) / 100;
-    var pgMl = amountMl - vgMl;
+    final maxVg = baseMode == BaseMode.maxVg;
+    // Max VG adds no neat PG, so VG starts as the whole batch and every
+    // other ingredient is carved out of it regardless of carrier.
+    var vgMl = maxVg
+        ? amountMl
+        : amountMl * clampd(targetVgPercent, 0, 100) / 100;
+    var pgMl = maxVg ? 0.0 : amountMl - vgMl;
 
     if (targetNic > 0) {
       if (nic == null || nic.nicStrength <= 0) {
@@ -890,8 +919,12 @@ MixResult calculateMix({
         // Nicotine is inherently volumetric: mg/mL of the finished volume.
         final ml = amountMl * targetNic / nic.nicStrength;
         final carrier = clampd(nic.carrierVg, 0, 1);
-        vgMl -= ml * carrier;
-        pgMl -= ml * (1 - carrier);
+        if (maxVg) {
+          vgMl -= ml;
+        } else {
+          vgMl -= ml * carrier;
+          pgMl -= ml * (1 - carrier);
+        }
         lines.add(
           MixLine(
             nic.displayName,
@@ -922,8 +955,12 @@ MixResult calculateMix({
           ? assumedGrams * pct / 100 / density
           : amountMl * pct / 100;
       final carrier = clampd(f.carrierVg, 0, 1);
-      vgMl -= ml * carrier;
-      pgMl -= ml * (1 - carrier);
+      if (maxVg) {
+        vgMl -= ml;
+      } else {
+        vgMl -= ml * carrier;
+        pgMl -= ml * (1 - carrier);
+      }
       lines.add(
         MixLine(
           f.displayName,
@@ -947,7 +984,16 @@ MixResult calculateMix({
     }
 
     const eps = 1e-12;
-    if (pgMl < -eps || vgMl < -eps) {
+    if (maxVg) {
+      if (vgMl < -eps) {
+        warnings.add(
+          'Nicotine and concentrates alone exceed '
+          '${amountMl.toStringAsFixed(1)} mL — the finished mix will be '
+          'larger than the requested batch.',
+        );
+      }
+      vgMl = clampd(vgMl, 0, double.infinity);
+    } else if (pgMl < -eps || vgMl < -eps) {
       // Absorb the overflow from the opposite side to keep total volume
       // equal to the requested batch size.
       if (pgMl < 0) {

@@ -36,6 +36,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
   late final TextEditingController _name, _notes, _batch, _nic, _vg;
   final List<_ConcentrateRow> _rows = [];
   late PercentMode _percentMode;
+  late BaseMode _baseMode;
   late String _initialSnapshot;
 
   AppState get s => widget.state;
@@ -57,6 +58,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
       text: _fmt(e?.targetVgPercent ?? set.defaultVgPercent),
     );
     _percentMode = e?.percentMode ?? set.defaultPercentMode;
+    _baseMode = e?.baseMode ?? BaseMode.ratio;
 
     if (e != null) {
       for (final f in e.flavors) {
@@ -101,7 +103,8 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
   bool _bad(TextEditingController c) =>
       c.text.trim().isNotEmpty && parseNum(c.text) == null;
 
-  /// Stable representation used for the unsaved-changes check.
+  /// Stable representation used for the unsaved-changes check. Covers every
+  /// field including row order and both modes.
   String _snapshot() => jsonEncode(_build('snapshot').toJson());
 
   bool get _dirty => _snapshot() != _initialSnapshot;
@@ -114,6 +117,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
     targetNic: _val(_nic),
     targetVgPercent: _val(_vg),
     percentMode: _percentMode,
+    baseMode: _baseMode,
     flavors: [
       for (final r in _rows)
         if (s.byId(r.ingredientId) != null && _val(r.percent) > 0)
@@ -250,6 +254,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
 
   Widget _form(ThemeData theme) {
     final nameClash = s.recipeByName(_name.text, exceptId: widget.existing?.id);
+    final isMaxVg = _baseMode == BaseMode.maxVg;
 
     return Card(
       child: Padding(
@@ -282,6 +287,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
               ),
             ),
             const SizedBox(height: 16),
+
             Text('Defaults when mixing', style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),
             Row(
@@ -290,10 +296,40 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
                 const SizedBox(width: 8),
                 Expanded(child: _num(_nic, 'Nic (mg/mL)')),
                 const SizedBox(width: 8),
-                Expanded(child: _num(_vg, 'VG %')),
+                Expanded(
+                  child: _num(
+                    _vg,
+                    'VG %',
+                    // Max VG ignores the target, so do not pretend otherwise.
+                    enabled: !isMaxVg,
+                    hint: isMaxVg ? 'set by mix' : null,
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 16),
+
+            Text('Base', style: theme.textTheme.titleSmall),
+            const SizedBox(height: 6),
+            SegmentedButton<BaseMode>(
+              segments: [
+                for (final m in BaseMode.values)
+                  ButtonSegment(value: m, label: Text(baseModeLabel(m))),
+              ],
+              selected: {_baseMode},
+              onSelectionChanged: (v) => setState(() => _baseMode = v.first),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                baseModeHint(_baseMode),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.outline,
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
             Text('Percentages are', style: theme.textTheme.titleSmall),
             const SizedBox(height: 6),
             SegmentedButton<PercentMode>(
@@ -314,6 +350,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
               ),
             ),
             const SizedBox(height: 20),
+
             Row(
               children: [
                 Expanded(
@@ -374,11 +411,18 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
     );
   }
 
-  Widget _num(TextEditingController c, String label) => TextField(
+  Widget _num(
+    TextEditingController c,
+    String label, {
+    bool enabled = true,
+    String? hint,
+  }) => TextField(
     controller: c,
+    enabled: enabled,
     keyboardType: const TextInputType.numberWithOptions(decimal: true),
     decoration: InputDecoration(
       labelText: label,
+      hintText: hint,
       border: const OutlineInputBorder(),
       isDense: true,
       errorText: _bad(c) ? 'Number?' : null,
@@ -405,7 +449,8 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
               child: Icon(Icons.drag_indicator, size: 20),
             ),
           ),
-          // Kind badge, tappable to reclassify.
+
+          // Kind badge, tappable to reclassify the row.
           Padding(
             padding: const EdgeInsets.only(right: 6),
             child: MenuAnchor(
@@ -447,6 +492,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
                   MenuItemButton(
                     onPressed: () => setState(() {
                       row.kind = k;
+                      // The current selection may not belong to the new kind.
                       if (s.byId(row.ingredientId)?.kind != k) {
                         row.ingredientId = null;
                       }
@@ -456,6 +502,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
               ],
             ),
           ),
+
           Expanded(
             child: IngredientPickerField(
               label: kindLabel(row.kind),
@@ -534,6 +581,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
       targetVgPercent: draft.targetVgPercent,
       settings: set,
       percentMode: _percentMode,
+      baseMode: _baseMode,
       nic: s.firstOfKind(IngredientKind.nicotine),
       pg: s.firstOfKind(IngredientKind.pg),
       vg: s.firstOfKind(IngredientKind.vg),
@@ -547,7 +595,28 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('Preview', style: theme.textTheme.titleLarge),
+            Row(
+              children: [
+                Expanded(
+                  child: Text('Preview', style: theme.textTheme.titleLarge),
+                ),
+                if (_baseMode == BaseMode.maxVg)
+                  Chip(
+                    label: const Text('Max VG'),
+                    visualDensity: VisualDensity.compact,
+                    backgroundColor: theme.colorScheme.secondaryContainer,
+                  ),
+                if (_percentMode == PercentMode.byWeight)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 6),
+                    child: Chip(
+                      label: const Text('By weight'),
+                      visualDensity: VisualDensity.compact,
+                      backgroundColor: theme.colorScheme.tertiaryContainer,
+                    ),
+                  ),
+              ],
+            ),
             Text(
               'At ${_fmt(draft.batchMl)} mL, using your default bases.',
               style: theme.textTheme.bodySmall,
