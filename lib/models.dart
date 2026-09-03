@@ -148,13 +148,13 @@ class Settings {
   Settings({
     this.pgDensity = 1.036,
     this.vgDensity = 1.261,
-    this.flavorDensity = 1.0,
+    this.flavorDensity = 1.036,
     this.currency = 'USD',
     this.defaultVgPercent = 70,
     this.defaultBatchMl = 30,
     this.refBottleMl = 30,
     this.scaleResolution = 0.01,
-    this.tareEachStep = false,
+    this.tareEachStep = true,
     this.lowStockMl = 5,
   });
 
@@ -200,13 +200,13 @@ class Settings {
   factory Settings.fromJson(Map<String, dynamic> j) => Settings(
     pgDensity: (j['pgDensity'] as num?)?.toDouble() ?? 1.036,
     vgDensity: (j['vgDensity'] as num?)?.toDouble() ?? 1.261,
-    flavorDensity: (j['flavorDensity'] as num?)?.toDouble() ?? 1.0,
+    flavorDensity: (j['flavorDensity'] as num?)?.toDouble() ?? 1.036,
     currency: j['currency'] as String? ?? 'USD',
     defaultVgPercent: (j['defaultVgPercent'] as num?)?.toDouble() ?? 70,
     defaultBatchMl: (j['defaultBatchMl'] as num?)?.toDouble() ?? 30,
     refBottleMl: (j['refBottleMl'] as num?)?.toDouble() ?? 30,
     scaleResolution: (j['scaleResolution'] as num?)?.toDouble() ?? 0.01,
-    tareEachStep: j['tareEachStep'] as bool? ?? false,
+    tareEachStep: j['tareEachStep'] as bool? ?? true,
     lowStockMl: (j['lowStockMl'] as num?)?.toDouble() ?? 5,
   );
 }

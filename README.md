@@ -22,6 +22,8 @@ ingredient's actual carrier, the weigh-along mode shows cumulative
 targets that shift when you overpour, and the mix log records what you
 actually weighed rather than what was planned.
 
+
+
 ## Comparison
 
 Rough positioning first:
@@ -56,7 +58,6 @@ Rough positioning first:
 | --- | --- | --- | --- | --- | --- |
 | Step-by-step weigh-along | Yes | No | No | No | No |
 | Cumulative targets that adjust after an overpour | Yes | No | No | No | No |
-| Lightest ingredient first | Yes | No | No | No | No |
 | Scale resolution awareness with warnings | Yes | No | No | No | No |
 | Screen kept awake while mixing | Yes | n/a | No | No | No |
 | Logs real weighed amounts, not planned ones | Yes | No | No | No | No |
@@ -82,9 +83,9 @@ Rough positioning first:
 | Seeded with DIY classics | Yes | No | n/a | n/a | No |
 | Shared public recipe database | No | No | Yes | Yes | No |
 | Import from ELR or AllTheFlavors | No | No | n/a | n/a | No |
-| Edit a saved recipe in place | No | Yes | Yes | Yes | n/a |
+| Edit a saved recipe in place | Yes | Yes | Yes | Yes | n/a |
 | Mix history with steep dates | Yes | No | Partial | No | No |
-| Tasting notes and ratings | No | No | Yes | Yes | No |
+| Tasting notes and ratings | Yes | No | Yes | Yes | No |
 
 ### Platform and data
 
@@ -206,17 +207,9 @@ The schema is versioned with forward migrations. Loading data from a
 newer build than the one you are running will refuse rather than
 corrupt.
 
-## Not yet
+## Roadmap 
 
-Honest list of known gaps: recipe editing in place, percent-by-weight
-mode, additive and thinner ingredient types, nicotine salts, hardware
-and shipping costs in the cost model, ELR and AllTheFlavors import,
-tasting notes, and shake reminders. The web build compiles but is
-untested and browser storage limits make it a poor fit for a mix log.
-
-Seeded recipe percentages are the commonly circulated versions and are
-not authoritative — verify against the original sources before trusting
-them.
+Planned work and known gaps: [ROADMAP.md](ROADMAP.md).
 
 ## Safety
 
