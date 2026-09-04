@@ -53,6 +53,8 @@ class _IngredientDialogState extends State<IngredientDialog> {
       carrier,
       notes;
   bool _densityTouched = false;
+  late NicUnit nicUnit;
+  late bool isSalt;
 
   @override
   void initState() {
@@ -60,7 +62,8 @@ class _IngredientDialogState extends State<IngredientDialog> {
     final e = widget.existing;
     kind = e?.kind ?? widget.initialKind ?? IngredientKind.flavor;
     String n(double v) => v == 0 ? '' : v.toString();
-
+    nicUnit = e?.nicUnit ?? NicUnit.perMl;
+    isSalt = e?.nicIsSalt ?? false;
     var startBrand = e?.brand ?? '';
     var startName = e?.name ?? widget.initialName?.trim() ?? '';
     if (e == null && startBrand.isEmpty && startName.isNotEmpty) {
@@ -301,7 +304,59 @@ class _IngredientDialogState extends State<IngredientDialog> {
                 ],
               ),
               field(stock, 'Stock on hand (mL, blank = bottle size)'),
-              if (isNic) field(nic, 'Nicotine strength (mg/mL)'),
+              if (isNic) ...[
+                Row(
+                  children: [
+                    Expanded(
+                      child: field(nic, 'Strength (${nicUnitLabel(nicUnit)})'),
+                    ),
+                    const SizedBox(width: 8),
+                    SizedBox(
+                      width: 130,
+                      child: DropdownMenu<NicUnit>(
+                        initialSelection: nicUnit,
+                        label: const Text('Unit'),
+                        expandedInsets: EdgeInsets.zero,
+                        onSelected: (u) =>
+                            setState(() => nicUnit = u ?? nicUnit),
+                        dropdownMenuEntries: [
+                          for (final u in NicUnit.values)
+                            DropdownMenuEntry(value: u, label: nicUnitLabel(u)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(4, 4, 4, 8),
+                    child: Text(
+                      nicUnit == NicUnit.perGram
+                          ? '${nicUnitHint(nicUnit)} '
+                                'At ${_v(density).toStringAsFixed(3)} g/mL '
+                                'that is '
+                                '${(_v(nic) * _v(density)).toStringAsFixed(1)} '
+                                'mg/mL.'
+                          : nicUnitHint(nicUnit),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.outline,
+                      ),
+                    ),
+                  ),
+                ),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  dense: true,
+                  title: const Text('Nicotine salt'),
+                  subtitle: const Text(
+                    'Recorded for the log. Mixing math is unchanged.',
+                  ),
+                  value: isSalt,
+                  onChanged: (v) => setState(() => isSalt = v ?? false),
+                ),
+              ],
               field(notes, 'Notes', numeric: false),
             ],
           ),
@@ -330,6 +385,8 @@ class _IngredientDialogState extends State<IngredientDialog> {
                       avgCostPerMl: e?.avgCostPerMl ?? 0,
                       stockMl: stock.text.trim().isEmpty ? _v(size) : _v(stock),
                       nicStrength: _v(nic),
+                      nicUnit: nicUnit,
+                      nicIsSalt: isSalt,
                       carrierVg: _carrierVg,
                       notes: notes.text.trim(),
                     ),

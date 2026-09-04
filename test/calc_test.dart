@@ -1520,4 +1520,133 @@ some line with no numbers at all
       expect(p.ignored, isEmpty);
     });
   });
+  group('nicotine strength units', () {
+    test('mg/mL is unchanged', () {
+      final n = Ingredient(
+        id: 'n',
+        name: 'Nic',
+        kind: IngredientKind.nicotine,
+        density: 1.036,
+        nicStrength: 100,
+      );
+      expect(n.nicMgPerMl, 100);
+    });
+
+    test('mg/g converts through density', () {
+      final n = Ingredient(
+        id: 'n',
+        name: 'Nic VG',
+        kind: IngredientKind.nicotine,
+        density: 1.261,
+        nicStrength: 100,
+        nicUnit: NicUnit.perGram,
+        carrierVg: 1,
+      );
+      // 100 mg per gram, 1.261 g per mL -> 126.1 mg/mL
+      expect(n.nicMgPerMl, closeTo(126.1, 1e-9));
+    });
+
+    test('a mg/g base needs less volume for the same target', () {
+      Ingredient base(NicUnit u) => Ingredient(
+        id: 'n',
+        name: 'Nic',
+        kind: IngredientKind.nicotine,
+        density: 1.261,
+        nicStrength: 100,
+        nicUnit: u,
+        carrierVg: 1,
+        stockMl: 100,
+      );
+
+      double nicMl(NicUnit u) => calculateMix(
+        amountMl: 100,
+        targetNic: 6,
+        targetVgPercent: 100,
+        settings: Settings(),
+        nic: base(u),
+      ).lines.first.ml;
+
+      expect(nicMl(NicUnit.perMl), closeTo(6, 1e-9));
+      expect(nicMl(NicUnit.perGram), closeTo(100 * 6 / 126.1, 1e-9));
+      expect(nicMl(NicUnit.perGram), lessThan(nicMl(NicUnit.perMl)));
+    });
+
+    test('achieved strength still lands on target for mg/g', () {
+      final r = calculateMix(
+        amountMl: 100,
+        targetNic: 6,
+        targetVgPercent: 100,
+        settings: Settings(),
+        nic: Ingredient(
+          id: 'n',
+          name: 'Nic',
+          kind: IngredientKind.nicotine,
+          density: 1.261,
+          nicStrength: 100,
+          nicUnit: NicUnit.perGram,
+          carrierVg: 1,
+          stockMl: 100,
+        ),
+      );
+      expect(r.actualNicMgPerMl, closeTo(6, 1e-9));
+    });
+
+    test('over-strength warning uses the converted value', () {
+      final r = calculateMix(
+        amountMl: 30,
+        targetNic: 120, // under 126.1 mg/mL, so this must NOT warn
+        targetVgPercent: 100,
+        settings: Settings(),
+        nic: Ingredient(
+          id: 'n',
+          name: 'Nic',
+          kind: IngredientKind.nicotine,
+          density: 1.261,
+          nicStrength: 100,
+          nicUnit: NicUnit.perGram,
+          stockMl: 100,
+        ),
+      );
+      expect(r.warnings.any((w) => w.contains('below the base')), isFalse);
+    });
+
+    test('unit and salt flag round-trip, defaulting for old data', () {
+      final n = Ingredient(
+        id: 'n',
+        name: 'Salt',
+        kind: IngredientKind.nicotine,
+        density: 1.036,
+        nicStrength: 50,
+        nicUnit: NicUnit.perGram,
+        nicIsSalt: true,
+      );
+      final back = Ingredient.fromJson(
+        jsonDecode(jsonEncode(n.toJson())) as Map<String, dynamic>,
+      );
+      expect(back.nicUnit, NicUnit.perGram);
+      expect(back.nicIsSalt, isTrue);
+
+      final old = Ingredient.fromJson({
+        'id': 'x',
+        'name': 'Legacy',
+        'kind': IngredientKind.nicotine.index,
+        'density': 1.036,
+        'nicStrength': 100,
+      });
+      expect(old.nicUnit, NicUnit.perMl);
+      expect(old.nicIsSalt, isFalse);
+      expect(old.nicMgPerMl, 100);
+    });
+  });
+
+  group('currency formatting', () {
+    test('falls back gracefully for an unknown code', () {
+      final s = Settings(currency: 'ZZZ');
+      expect(money(1.5, s).contains('1.50'), isTrue);
+    });
+
+    test('per-mL keeps three decimals', () {
+      expect(moneyPerMl(0.1234, Settings()), '0.123 USD/mL');
+    });
+  });
 }

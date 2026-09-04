@@ -1,3 +1,5 @@
+import 'package:intl/intl.dart';
+
 enum IngredientKind { pg, vg, nicotine, flavor, additive, thinner }
 
 /// Reference densities at room temperature, g/mL.
@@ -49,6 +51,21 @@ enum PercentMode { byVolume, byWeight }
 
 /// How the PG/VG base is allocated.
 enum BaseMode { ratio, maxVg }
+
+/// How a nicotine base's strength is labelled.
+enum NicUnit { perMl, perGram }
+
+String nicUnitLabel(NicUnit u) => switch (u) {
+  NicUnit.perMl => 'mg/mL',
+  NicUnit.perGram => 'mg/g',
+};
+
+String nicUnitHint(NicUnit u) => switch (u) {
+  NicUnit.perMl => 'Strength per millilitre. The usual labelling.',
+  NicUnit.perGram =>
+    'Strength per gram. Converted using this base\'s density, so get the '
+        'density right or the whole mix is off.',
+};
 
 String baseModeLabel(BaseMode m) => switch (m) {
   BaseMode.ratio => 'Target ratio',
@@ -129,7 +146,28 @@ double? parseNum(String s) {
   return v;
 }
 
-String money(double v, Settings s) => '${v.toStringAsFixed(2)} ${s.currency}';
+NumberFormat? _moneyFormat;
+String? _moneyCurrency;
+
+/// Locale-correct currency formatting, falling back to a plain suffix for
+/// codes intl does not recognise.
+String money(double v, Settings s) {
+  if (_moneyCurrency != s.currency) {
+    _moneyCurrency = s.currency;
+    try {
+      _moneyFormat = NumberFormat.simpleCurrency(name: s.currency);
+    } catch (_) {
+      _moneyFormat = null;
+    }
+  }
+  final f = _moneyFormat;
+  return f == null ? '${v.toStringAsFixed(2)} ${s.currency}' : f.format(v);
+}
+
+/// Three-decimal variant for per-mL figures, where rounding to cents hides
+/// the difference between ingredients.
+String moneyPerMl(double v, Settings s) =>
+    '${v.toStringAsFixed(3)} ${s.currency}/mL';
 
 /// Snackbar timings. Plain confirmations vanish fast; anything with an undo
 /// action stays long enough to actually click it.
@@ -148,6 +186,8 @@ class Ingredient {
     this.avgCostPerMl = 0, // weighted average from restocks; 0 = unset
     this.stockMl = 0,
     this.nicStrength = 0, // mg/mL, nicotine bases only
+    this.nicUnit = NicUnit.perMl,
+    this.nicIsSalt = false,
     this.carrierVg = 0, // 0..1 fraction of carrier that is VG
     this.notes = '',
   });
@@ -162,6 +202,8 @@ class Ingredient {
   double avgCostPerMl;
   double stockMl;
   double nicStrength;
+  NicUnit nicUnit;
+  bool nicIsSalt;
   double carrierVg;
   String notes;
 
@@ -178,6 +220,13 @@ class Ingredient {
       ? avgCostPerMl
       : (bottleSizeMl > 0 ? bottleCost / bottleSizeMl : 0);
 
+  /// Strength normalised to mg per mL, which is what the mixing math wants.
+  /// A mg/g base converts through its density, so a 100 mg/g VG base is
+  /// about 126 mg/mL.
+  double get nicMgPerMl => switch (nicUnit) {
+    NicUnit.perMl => nicStrength,
+    NicUnit.perGram => nicStrength * density,
+  };
   double get stockGrams => stockMl * density;
 
   /// True when [density] disagrees with what the carrier implies. Catches
@@ -198,6 +247,8 @@ class Ingredient {
     'avgCostPerMl': avgCostPerMl,
     'stockMl': stockMl,
     'nicStrength': nicStrength,
+    'nicUnit': nicUnit.index,
+    'nicIsSalt': nicIsSalt,
     'carrierVg': carrierVg,
     'notes': notes,
   };
@@ -213,6 +264,8 @@ class Ingredient {
     avgCostPerMl: (j['avgCostPerMl'] as num?)?.toDouble() ?? 0,
     stockMl: (j['stockMl'] as num?)?.toDouble() ?? 0,
     nicStrength: (j['nicStrength'] as num?)?.toDouble() ?? 0,
+    nicUnit: NicUnit.values[(j['nicUnit'] as num?)?.toInt() ?? 0],
+    nicIsSalt: j['nicIsSalt'] as bool? ?? false,
     carrierVg: (j['carrierVg'] as num?)?.toDouble() ?? 0,
     notes: j['notes'] as String? ?? '',
   );
@@ -229,8 +282,9 @@ class Settings {
     this.defaultBatchMl = 30,
     this.refBottleMl = 30,
     this.scaleResolution = 0.01,
-    this.tareEachStep = false,
+    this.tareEachStep = true,
     this.lowStockMl = 5,
+    this.themeMode = 0,
     this.defaultPercentMode = PercentMode.byVolume,
   });
 
@@ -245,6 +299,7 @@ class Settings {
   double scaleResolution;
   bool tareEachStep;
   double lowStockMl;
+  int themeMode; // 0 system, 1 light, 2 dark
   PercentMode defaultPercentMode;
 
   /// Density implied by kind alone. Prefer [densityForCarrier].
@@ -905,19 +960,18 @@ MixResult calculateMix({
     var pgMl = maxVg ? 0.0 : amountMl - vgMl;
 
     if (targetNic > 0) {
-      if (nic == null || nic.nicStrength <= 0) {
+      if (nic == null || nic.nicMgPerMl <= 0) {
         warnings.add(
           'Target nicotine is ${targetNic.toStringAsFixed(1)} mg/mL but no '
           'nicotine base is selected — this mix will be 0 mg.',
         );
-      } else if (targetNic >= nic.nicStrength) {
+      } else if (targetNic >= nic.nicMgPerMl) {
         warnings.add(
           'Target strength must be below the base strength '
-          '(${nic.nicStrength.toStringAsFixed(0)} mg/mL).',
+          '(${nic.nicMgPerMl.toStringAsFixed(0)} mg/mL).',
         );
       } else {
-        // Nicotine is inherently volumetric: mg/mL of the finished volume.
-        final ml = amountMl * targetNic / nic.nicStrength;
+        final ml = amountMl * targetNic / nic.nicMgPerMl;
         final carrier = clampd(nic.carrierVg, 0, 1);
         if (maxVg) {
           vgMl -= ml;
@@ -936,7 +990,7 @@ MixResult calculateMix({
             vgFraction: carrier,
             density: nic.density,
             costPerMl: nic.costPerMl,
-            nicMgPerMl: nic.nicStrength,
+            nicMgPerMl: nic.nicMgPerMl,
           ),
         );
       }
@@ -972,7 +1026,7 @@ MixResult calculateMix({
           vgFraction: carrier,
           density: density,
           costPerMl: f.costPerMl,
-          nicMgPerMl: f.nicStrength,
+          nicMgPerMl: f.nicMgPerMl,
         ),
       );
     }

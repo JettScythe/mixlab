@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import 'empty_state.dart';
 import '../models.dart';
 import '../state.dart';
 import 'ingredient_dialog.dart';
@@ -144,13 +146,61 @@ class _PickerDialog extends StatefulWidget {
 
 class _PickerDialogState extends State<_PickerDialog> {
   final _q = TextEditingController();
+  final _scroll = ScrollController();
+  int _highlight = 0;
 
   bool get _canCreate => widget.state != null && widget.createKind != null;
+
+  List<Ingredient> get _results => searchIngredients(widget.items, _q.text);
 
   @override
   void dispose() {
     _q.dispose();
+    _scroll.dispose();
     super.dispose();
+  }
+
+  void _move(int delta) {
+    final n = _results.length;
+    if (n == 0) return;
+    setState(() => _highlight = (_highlight + delta).clamp(0, n - 1));
+    // Keep the highlighted row on screen. 56 is the dense ListTile height.
+    const rowHeight = 56.0;
+    final target = _highlight * rowHeight;
+    if (_scroll.hasClients) {
+      final top = _scroll.offset;
+      final bottom = top + _scroll.position.viewportDimension - rowHeight;
+      if (target < top) {
+        _scroll.jumpTo(target);
+      } else if (target > bottom) {
+        _scroll.jumpTo(target - _scroll.position.viewportDimension + rowHeight);
+      }
+    }
+  }
+
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    switch (event.logicalKey) {
+      case LogicalKeyboardKey.arrowDown:
+        _move(1);
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.arrowUp:
+        _move(-1);
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.enter:
+      case LogicalKeyboardKey.numpadEnter:
+        final r = _results;
+        if (r.isNotEmpty && _highlight < r.length) {
+          Navigator.pop(context, _PickResult(r[_highlight].id));
+        } else if (_canCreate && _q.text.trim().isNotEmpty) {
+          _create();
+        }
+        return KeyEventResult.handled;
+      default:
+        return KeyEventResult.ignored;
+    }
   }
 
   Future<void> _create() async {
@@ -169,9 +219,10 @@ class _PickerDialogState extends State<_PickerDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final results = searchIngredients(widget.items, _q.text);
+    final results = _results;
     final theme = Theme.of(context);
     final query = _q.text.trim();
+    if (_highlight >= results.length) _highlight = 0;
 
     return AlertDialog(
       title: Text(widget.title),
@@ -179,91 +230,93 @@ class _PickerDialogState extends State<_PickerDialog> {
       content: SizedBox(
         width: 460,
         height: 480,
-        child: Column(
-          children: [
-            TextField(
-              controller: _q,
-              autofocus: true,
-              onChanged: (_) => setState(() {}),
-              onSubmitted: (_) {
-                if (results.isNotEmpty) {
-                  Navigator.pop(context, _PickResult(results.first.id));
-                } else if (_canCreate && query.isNotEmpty) {
-                  _create();
-                }
-              },
-              decoration: InputDecoration(
-                isDense: true,
-                prefixIcon: const Icon(Icons.search),
-                hintText: 'Search brand or name…',
-                border: const OutlineInputBorder(),
-                suffixIcon: _q.text.isEmpty
-                    ? null
-                    : IconButton(
-                        icon: const Icon(Icons.clear),
-                        onPressed: () => setState(_q.clear),
+        child: Focus(
+          onKeyEvent: _onKey,
+          child: Column(
+            children: [
+              TextField(
+                controller: _q,
+                autofocus: true,
+                onChanged: (_) => setState(() => _highlight = 0),
+                decoration: InputDecoration(
+                  prefixIcon: const Icon(Icons.search),
+                  hintText: 'Search brand or name…',
+                  helperText: 'Arrows to move, Enter to pick',
+                  suffixIcon: _q.text.isEmpty
+                      ? null
+                      : IconButton(
+                          icon: const Icon(Icons.clear),
+                          onPressed: () => setState(_q.clear),
+                        ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: results.isEmpty
+                    ? EmptyState(
+                        icon: Icons.search_off,
+                        title: widget.emptyHint,
+                        message: _canCreate && query.isNotEmpty
+                            ? 'Nothing matches. You can add it now without '
+                                  'losing your place.'
+                            : null,
+                        actionLabel: _canCreate && query.isNotEmpty
+                            ? 'Create "$query"'
+                            : null,
+                        onAction: _canCreate && query.isNotEmpty
+                            ? _create
+                            : null,
+                      )
+                    : ListView.builder(
+                        controller: _scroll,
+                        itemExtent: 56,
+                        itemCount: results.length,
+                        itemBuilder: (context, i) {
+                          final e = results[i];
+                          final low = e.stockMl <= widget.settings.lowStockMl;
+                          return ListTile(
+                            dense: true,
+                            selected:
+                                i == _highlight || e.id == widget.selectedId,
+                            selectedTileColor: i == _highlight
+                                ? theme.colorScheme.primaryContainer
+                                : null,
+                            leading: e.brand.isEmpty
+                                ? const Icon(Icons.water_drop_outlined)
+                                : Tooltip(
+                                    message: knownBrands[e.brand] ?? e.brand,
+                                    child: Chip(
+                                      label: Text(
+                                        e.brand,
+                                        style: theme.textTheme.labelSmall,
+                                      ),
+                                      visualDensity: VisualDensity.compact,
+                                      padding: EdgeInsets.zero,
+                                    ),
+                                  ),
+                            title: Text(
+                              e.name,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            subtitle: Text(
+                              '${e.stockMl.toStringAsFixed(1)} mL on hand'
+                              '${e.costPerMl > 0 ? ' • ${moneyPerMl(e.costPerMl, widget.settings)}' : ''}',
+                            ),
+                            trailing: low
+                                ? Icon(
+                                    Icons.error_outline,
+                                    size: 18,
+                                    color: theme.colorScheme.error,
+                                  )
+                                : null,
+                            onTap: () =>
+                                Navigator.pop(context, _PickResult(e.id)),
+                          );
+                        },
                       ),
               ),
-            ),
-            const SizedBox(height: 8),
-            Expanded(
-              child: results.isEmpty
-                  ? Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(widget.emptyHint, textAlign: TextAlign.center),
-                          if (_canCreate && query.isNotEmpty) ...[
-                            const SizedBox(height: 12),
-                            FilledButton.icon(
-                              onPressed: _create,
-                              icon: const Icon(Icons.add),
-                              label: Text('Create "$query"'),
-                            ),
-                          ],
-                        ],
-                      ),
-                    )
-                  : ListView.builder(
-                      itemCount: results.length,
-                      itemBuilder: (context, i) {
-                        final e = results[i];
-                        final low = e.stockMl <= widget.settings.lowStockMl;
-                        return ListTile(
-                          dense: true,
-                          selected: e.id == widget.selectedId,
-                          leading: e.brand.isEmpty
-                              ? const Icon(Icons.water_drop_outlined)
-                              : Tooltip(
-                                  message: knownBrands[e.brand] ?? e.brand,
-                                  child: Chip(
-                                    label: Text(
-                                      e.brand,
-                                      style: theme.textTheme.labelSmall,
-                                    ),
-                                    visualDensity: VisualDensity.compact,
-                                    padding: EdgeInsets.zero,
-                                  ),
-                                ),
-                          title: Text(e.name),
-                          subtitle: Text(
-                            '${e.stockMl.toStringAsFixed(1)} mL on hand'
-                            '${e.costPerMl > 0 ? ' • ${e.costPerMl.toStringAsFixed(3)} ${widget.settings.currency}/mL' : ''}',
-                          ),
-                          trailing: low
-                              ? Icon(
-                                  Icons.error_outline,
-                                  size: 18,
-                                  color: theme.colorScheme.error,
-                                )
-                              : null,
-                          onTap: () =>
-                              Navigator.pop(context, _PickResult(e.id)),
-                        );
-                      },
-                    ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
       actions: [

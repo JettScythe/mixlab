@@ -23,7 +23,7 @@ class AppState extends ChangeNotifier {
   static const _kRecipes = 'recipes_v1';
   static const _kMixLog = 'mixlog_v1';
   static const _kPurchases = 'purchases_v1';
-  static const currentSchema = 6;
+  static const currentSchema = 7;
 
   static const _allKeys = [
     _kSchema,
@@ -228,6 +228,12 @@ class AppState extends ChangeNotifier {
       // v6 adds Recipe.baseMode. Existing recipes were mixed to their
       // stored ratio, which is the default, so no transform is needed.
       v = 6;
+    }
+    if (v < 7) {
+      // v7 adds nicotine strength units and the salt flag. Existing bases
+      // were all mg/mL, which is the default, so no transform is needed.
+      // The bump stops an older build reading a mg/g base as mg/mL.
+      v = 7;
     }
     await prefs.setInt(_kSchema, v);
   }

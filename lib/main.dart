@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'pages/calculator_page.dart';
@@ -9,6 +10,7 @@ import 'pages/inventory_page.dart';
 import 'pages/recipes_page.dart';
 import 'pages/settings_page.dart';
 import 'state.dart';
+import 'theme.dart';
 
 bool get isDesktop =>
     !kIsWeb &&
@@ -16,17 +18,35 @@ bool get isDesktop =>
         defaultTargetPlatform == TargetPlatform.windows ||
         defaultTargetPlatform == TargetPlatform.linux);
 
+// Window geometry lives outside the app schema: it is machine state, not
+// user data, and should not travel in a backup.
+const _kWinW = 'window_w';
+const _kWinH = 'window_h';
+const _kWinX = 'window_x';
+const _kWinY = 'window_y';
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   if (isDesktop) {
     await windowManager.ensureInitialized();
-    const options = WindowOptions(
-      size: Size(1100, 780),
-      minimumSize: Size(560, 600),
+    final prefs = await SharedPreferences.getInstance();
+    final w = prefs.getDouble(_kWinW) ?? 1180;
+    final h = prefs.getDouble(_kWinH) ?? 820;
+    final x = prefs.getDouble(_kWinX);
+    final y = prefs.getDouble(_kWinY);
+
+    final options = WindowOptions(
+      size: Size(w, h),
+      minimumSize: const Size(420, 560),
       title: 'MixLab',
     );
-    windowManager.waitUntilReadyToShow(options, () async {
+    await windowManager.waitUntilReadyToShow(options, () async {
+      if (x != null && y != null) {
+        await windowManager.setPosition(Offset(x, y));
+      } else {
+        await windowManager.center();
+      }
       await windowManager.show();
       await windowManager.focus();
     });
@@ -41,22 +61,20 @@ class MixLabApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'MixLab',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
+    return ListenableBuilder(
+      listenable: state,
+      builder: (context, _) => MaterialApp(
+        title: 'MixLab',
+        debugShowCheckedModeBanner: false,
+        theme: buildTheme(Brightness.light),
+        darkTheme: buildTheme(Brightness.dark),
+        themeMode: switch (state.settings.themeMode) {
+          1 => ThemeMode.light,
+          2 => ThemeMode.dark,
+          _ => ThemeMode.system,
+        },
+        home: HomeShell(state: state),
       ),
-      darkTheme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.teal,
-          brightness: Brightness.dark,
-        ),
-      ),
-      themeMode: ThemeMode.system,
-      home: HomeShell(state: state),
     );
   }
 }
@@ -79,11 +97,12 @@ const _dests = [
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key, required this.state});
   final AppState state;
+
   @override
   State<HomeShell> createState() => _HomeShellState();
 }
 
-class _HomeShellState extends State<HomeShell> {
+class _HomeShellState extends State<HomeShell> with WindowListener {
   int _index = 0;
   int _seenSaveError = 0;
 
@@ -91,12 +110,37 @@ class _HomeShellState extends State<HomeShell> {
   void initState() {
     super.initState();
     widget.state.addListener(_onState);
+    if (isDesktop) windowManager.addListener(this);
   }
 
   @override
   void dispose() {
     widget.state.removeListener(_onState);
+    if (isDesktop) windowManager.removeListener(this);
     super.dispose();
+  }
+
+  // Persist geometry as the window settles, so a crash still leaves a
+  // usable last-known size.
+  @override
+  void onWindowResized() => _saveWindow();
+
+  @override
+  void onWindowMoved() => _saveWindow();
+
+  Future<void> _saveWindow() async {
+    if (!isDesktop) return;
+    try {
+      final size = await windowManager.getSize();
+      final pos = await windowManager.getPosition();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble(_kWinW, size.width);
+      await prefs.setDouble(_kWinH, size.height);
+      await prefs.setDouble(_kWinX, pos.dx);
+      await prefs.setDouble(_kWinY, pos.dy);
+    } catch (e) {
+      debugPrint('Could not save window geometry: $e');
+    }
   }
 
   void _onState() {
@@ -107,13 +151,15 @@ class _HomeShellState extends State<HomeShell> {
     if (msg == null) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          backgroundColor: Theme.of(context).colorScheme.error,
-          duration: const Duration(seconds: 10),
-          content: Text('Could not save changes: $msg'),
-        ),
-      );
+      ScaffoldMessenger.of(context)
+        ..removeCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            backgroundColor: Theme.of(context).colorScheme.error,
+            duration: const Duration(seconds: 10),
+            content: Text('Could not save changes: $msg'),
+          ),
+        );
     });
   }
 
@@ -130,9 +176,8 @@ class _HomeShellState extends State<HomeShell> {
             body: Center(child: CircularProgressIndicator()),
           );
         }
-        if (s.loadError != null) {
-          return _RecoveryScreen(state: s);
-        }
+        if (s.loadError != null) return _RecoveryScreen(state: s);
+
         final pages = [
           CalculatorPage(state: s),
           RecipesPage(state: s, onMix: () => _go(0)),
@@ -140,11 +185,11 @@ class _HomeShellState extends State<HomeShell> {
           HistoryPage(state: s, onMix: () => _go(0)),
           SettingsPage(state: s),
         ];
+
         return LayoutBuilder(
           builder: (context, c) {
-            final narrow = c.maxWidth < 700;
             final body = IndexedStack(index: _index, children: pages);
-            if (narrow) {
+            if (Breaks.isCompact(c.maxWidth)) {
               return Scaffold(
                 body: SafeArea(child: body),
                 bottomNavigationBar: NavigationBar(
@@ -167,7 +212,9 @@ class _HomeShellState extends State<HomeShell> {
                   NavigationRail(
                     selectedIndex: _index,
                     onDestinationSelected: _go,
-                    labelType: NavigationRailLabelType.all,
+                    labelType: c.maxWidth >= Breaks.wide
+                        ? NavigationRailLabelType.all
+                        : NavigationRailLabelType.selected,
                     destinations: [
                       for (final d in _dests)
                         NavigationRailDestination(
@@ -189,7 +236,7 @@ class _HomeShellState extends State<HomeShell> {
   }
 }
 
-/// Shown when load() throws, so a corrupt blob can't lock you out forever.
+/// Shown when load() throws, so a corrupt blob cannot lock you out.
 class _RecoveryScreen extends StatelessWidget {
   const _RecoveryScreen({required this.state});
   final AppState state;
@@ -202,7 +249,7 @@ class _RecoveryScreen extends StatelessWidget {
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 560),
           child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
+            padding: const EdgeInsets.all(Gap.xl),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
@@ -211,30 +258,30 @@ class _RecoveryScreen extends StatelessWidget {
                   size: 48,
                   color: theme.colorScheme.error,
                 ),
-                const SizedBox(height: 12),
+                Gap.vMd,
                 Text(
                   'Could not load your data',
                   style: theme.textTheme.headlineSmall,
                   textAlign: TextAlign.center,
                 ),
-                const SizedBox(height: 12),
+                Gap.vMd,
                 Container(
-                  padding: const EdgeInsets.all(12),
+                  padding: const EdgeInsets.all(Gap.md),
                   decoration: BoxDecoration(
                     color: theme.colorScheme.errorContainer,
                     borderRadius: BorderRadius.circular(8),
                   ),
-                  child: Text(
+                  child: SelectableText(
                     state.loadError ?? 'Unknown error',
                     style: TextStyle(color: theme.colorScheme.onErrorContainer),
                   ),
                 ),
-                const SizedBox(height: 20),
+                Gap.vLg,
                 const Text(
-                  'Copy the raw data first — it may still be '
-                  'salvageable by hand. Resetting is permanent.',
+                  'Copy the raw data first — it may still be salvageable by '
+                  'hand. Resetting is permanent.',
                 ),
-                const SizedBox(height: 16),
+                Gap.vLg,
                 FilledButton.tonalIcon(
                   onPressed: () async {
                     final dump = await state.rawDump();
@@ -249,13 +296,13 @@ class _RecoveryScreen extends StatelessWidget {
                   icon: const Icon(Icons.copy_all_outlined),
                   label: const Text('Copy raw data to clipboard'),
                 ),
-                const SizedBox(height: 8),
+                Gap.vSm,
                 OutlinedButton.icon(
                   onPressed: state.load,
                   icon: const Icon(Icons.refresh),
                   label: const Text('Try loading again'),
                 ),
-                const SizedBox(height: 8),
+                Gap.vSm,
                 OutlinedButton.icon(
                   style: OutlinedButton.styleFrom(
                     foregroundColor: theme.colorScheme.error,

@@ -40,6 +40,7 @@ class _SettingsPageState extends State<SettingsPage> {
   late double scaleRes;
   late bool tareEach;
   late PercentMode defaultMode;
+  late int themeMode;
 
   AppState get s => widget.state;
 
@@ -61,6 +62,7 @@ class _SettingsPageState extends State<SettingsPage> {
         : 0.01;
     tareEach = c.tareEachStep;
     defaultMode = c.defaultPercentMode;
+    themeMode = c.themeMode;
   }
 
   /// Re-reads every control from settings, after an import or reset.
@@ -80,6 +82,7 @@ class _SettingsPageState extends State<SettingsPage> {
         : 0.01;
     tareEach = c.tareEachStep;
     defaultMode = c.defaultPercentMode;
+    themeMode = c.themeMode;
   }
 
   @override
@@ -153,6 +156,25 @@ class _SettingsPageState extends State<SettingsPage> {
       padding: const EdgeInsets.all(16),
       child: Column(
         children: [
+          _card('Appearance', [
+            SegmentedButton<int>(
+              segments: const [
+                ButtonSegment(value: 0, label: Text('System')),
+                ButtonSegment(value: 1, label: Text('Light')),
+                ButtonSegment(value: 2, label: Text('Dark')),
+              ],
+              selected: {themeMode},
+              onSelectionChanged: (v) => setState(() => themeMode = v.first),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Applies when you save.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.outline,
+              ),
+            ),
+          ]),
+          const SizedBox(height: 16),
           _card('Densities', [
             Text(
               'Used when an ingredient has no measured density of its own. '
@@ -340,6 +362,7 @@ class _SettingsPageState extends State<SettingsPage> {
         tareEachStep: tareEach,
         lowStockMl: _v(lowStock, old.lowStockMl),
         defaultPercentMode: defaultMode,
+        themeMode: themeMode,
       ),
     );
     showToast(context, 'Settings saved.');
