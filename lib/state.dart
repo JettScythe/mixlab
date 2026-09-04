@@ -23,7 +23,7 @@ class AppState extends ChangeNotifier {
   static const _kRecipes = 'recipes_v1';
   static const _kMixLog = 'mixlog_v1';
   static const _kPurchases = 'purchases_v1';
-  static const currentSchema = 7;
+  static const currentSchema = 8;
 
   static const _allKeys = [
     _kSchema,
@@ -234,6 +234,11 @@ class AppState extends ChangeNotifier {
       // were all mg/mL, which is the default, so no transform is needed.
       // The bump stops an older build reading a mg/g base as mg/mL.
       v = 7;
+    }
+    if (v < 8) {
+      // v8 adds hardware costs on mixes and shipping on purchases. Both
+      // default to zero, so existing figures are unchanged.
+      v = 8;
     }
     await prefs.setInt(_kSchema, v);
   }
@@ -676,7 +681,39 @@ class AppState extends ChangeNotifier {
       ingredients.fold(0.0, (a, e) => a + e.stockMl * e.costPerMl);
 
   double get lifetimeMixCost => mixLog.fold(0.0, (a, l) => a + l.totalCost);
-  double get lifetimeSpend => purchases.fold(0.0, (a, p) => a + p.cost);
+  double get lifetimeSpend => purchases.fold(0.0, (a, p) => a + p.totalCost);
+
+  double get lifetimeHardwareCost =>
+      mixLog.fold(0.0, (a, l) => a + l.hardwareCost);
+
+  /// Largest batch of [r] mixable from current stock, or null if unlimited.
+  /// Computed at the recipe's own batch size and scaled.
+  double? capacityFor(Recipe r) {
+    final ref = r.batchMl > 0 ? r.batchMl : 30.0;
+    final result = calculateMix(
+      amountMl: ref,
+      targetNic: r.targetNic,
+      targetVgPercent: r.targetVgPercent,
+      settings: settings,
+      percentMode: r.percentMode,
+      baseMode: r.baseMode,
+      nic: firstOfKind(IngredientKind.nicotine),
+      pg: firstOfKind(IngredientKind.pg),
+      vg: firstOfKind(IngredientKind.vg),
+      flavors: [
+        for (final f in r.flavors)
+          if (byId(f.ingredientId) != null) (byId(f.ingredientId)!, f.percent),
+      ],
+    );
+    return maxBatchMl(result, ref, ingredients);
+  }
+
+  /// True when the recipe can be mixed at its stated batch size right now.
+  bool canMakeNow(Recipe r) {
+    if (r.flavors.any((f) => byId(f.ingredientId) == null)) return false;
+    final cap = capacityFor(r);
+    return cap == null || cap >= (r.batchMl > 0 ? r.batchMl : 30.0) - 1e-9;
+  }
 
   // ---------------------------------------------------------------- mutation
 
@@ -716,6 +753,7 @@ class AppState extends ChangeNotifier {
     required String ingredientId,
     required double volumeMl,
     required double cost,
+    double shippingCost = 0,
     bool useWeightedAverage = true,
   }) {
     final ing = byId(ingredientId)!;
@@ -723,7 +761,9 @@ class AppState extends ChangeNotifier {
     final prevCostPerMl = ing.costPerMl;
     final prevAvg = ing.avgCostPerMl;
 
-    final newCostPerMl = volumeMl > 0 ? cost / volumeMl : 0.0;
+    // Shipping is part of what the liquid actually cost you.
+    final landed = cost + shippingCost;
+    final newCostPerMl = volumeMl > 0 ? landed / volumeMl : 0.0;
     ing.stockMl = prevStock + volumeMl;
     if (useWeightedAverage) {
       final denom = prevStock + volumeMl;
@@ -741,6 +781,7 @@ class AppState extends ChangeNotifier {
       at: DateTime.now(),
       volumeMl: volumeMl,
       cost: cost,
+      shippingCost: shippingCost,
       prevStockMl: prevStock,
       prevCostPerMl: prevCostPerMl,
       prevAvgCostPerMl: prevAvg,
@@ -868,6 +909,7 @@ class AppState extends ChangeNotifier {
         ),
       );
     }
+    final hardware = hardwareCostFor(r.totalMl, settings);
     final log = MixLog(
       id: newId(),
       mixedAt: DateTime.now(),
@@ -879,6 +921,7 @@ class AppState extends ChangeNotifier {
       actualNic: r.actualNicMgPerMl,
       actualVgPercent: r.actualVgPercent,
       totalGrams: r.totalGrams,
+      hardwareCost: hardware,
       totalCost: r.totalCost,
       weighed: weighed,
       lines: lines,

@@ -284,6 +284,10 @@ class Settings {
     this.scaleResolution = 0.01,
     this.tareEachStep = true,
     this.lowStockMl = 5,
+    this.includeHardware = false,
+    this.emptyBottleCost = 0,
+    this.emptyBottleMl = 30,
+    this.consumablesCost = 0,
     this.themeMode = 0,
     this.defaultPercentMode = PercentMode.byVolume,
   });
@@ -299,6 +303,15 @@ class Settings {
   double scaleResolution;
   bool tareEachStep;
   double lowStockMl;
+
+  /// Bottles, caps and gloves are a real per-batch cost. Off by default so
+  /// existing figures do not change under you.
+  bool includeHardware;
+  double emptyBottleCost;
+  double emptyBottleMl;
+
+  /// Caps, labels, gloves — anything spent per batch regardless of size.
+  double consumablesCost;
   int themeMode; // 0 system, 1 light, 2 dark
   PercentMode defaultPercentMode;
 
@@ -331,6 +344,10 @@ class Settings {
     'scaleResolution': scaleResolution,
     'tareEachStep': tareEachStep,
     'lowStockMl': lowStockMl,
+    'includeHardware': includeHardware,
+    'emptyBottleCost': emptyBottleCost,
+    'emptyBottleMl': emptyBottleMl,
+    'consumablesCost': consumablesCost,
     'defaultPercentMode': defaultPercentMode.index,
   };
 
@@ -347,6 +364,10 @@ class Settings {
     scaleResolution: (j['scaleResolution'] as num?)?.toDouble() ?? 0.01,
     tareEachStep: j['tareEachStep'] as bool? ?? false,
     lowStockMl: (j['lowStockMl'] as num?)?.toDouble() ?? 5,
+    includeHardware: j['includeHardware'] as bool? ?? false,
+    emptyBottleCost: (j['emptyBottleCost'] as num?)?.toDouble() ?? 0,
+    emptyBottleMl: (j['emptyBottleMl'] as num?)?.toDouble() ?? 30,
+    consumablesCost: (j['consumablesCost'] as num?)?.toDouble() ?? 0,
     defaultPercentMode:
         PercentMode.values[(j['defaultPercentMode'] as num?)?.toInt() ?? 0],
   );
@@ -451,6 +472,7 @@ class Purchase {
     required this.prevStockMl,
     required this.prevCostPerMl,
     required this.prevAvgCostPerMl,
+    this.shippingCost = 0,
   });
 
   final String id;
@@ -463,7 +485,12 @@ class Purchase {
   final double prevCostPerMl;
   final double prevAvgCostPerMl;
 
-  double get costPerMl => volumeMl > 0 ? cost / volumeMl : 0;
+  /// Share of an order's shipping attributed to this item.
+  final double shippingCost;
+
+  double get totalCost => cost + shippingCost;
+
+  double get costPerMl => volumeMl > 0 ? totalCost / volumeMl : 0;
 
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -475,6 +502,7 @@ class Purchase {
     'prevStockMl': prevStockMl,
     'prevCostPerMl': prevCostPerMl,
     'prevAvgCostPerMl': prevAvgCostPerMl,
+    'shippingCost': shippingCost,
   };
 
   factory Purchase.fromJson(Map<String, dynamic> j) => Purchase(
@@ -489,6 +517,7 @@ class Purchase {
     prevStockMl: (j['prevStockMl'] as num?)?.toDouble() ?? 0,
     prevCostPerMl: (j['prevCostPerMl'] as num?)?.toDouble() ?? 0,
     prevAvgCostPerMl: (j['prevAvgCostPerMl'] as num?)?.toDouble() ?? 0,
+    shippingCost: (j['shippingCost'] as num?)?.toDouble() ?? 0,
   );
 }
 
@@ -710,6 +739,49 @@ class StockIssue {
   double get shortMl => neededMl - haveMl;
 }
 
+/// Cost of the physical parts of a batch: bottles plus per-batch
+/// consumables. Bottles are counted whole, because mixing 100 mL into
+/// 30 mL bottles uses four of them, not 3.33.
+double hardwareCostFor(double batchMl, Settings s) {
+  if (!s.includeHardware || batchMl <= 0) return 0;
+  var cost = s.consumablesCost;
+  if (s.emptyBottleMl > 0 && s.emptyBottleCost > 0) {
+    cost += (batchMl / s.emptyBottleMl).ceil() * s.emptyBottleCost;
+  }
+  return cost;
+}
+
+/// Largest batch mixable from current stock, given a mix computed at
+/// [referenceMl].
+///
+/// Every ingredient scales linearly with batch volume in both percent
+/// modes, so the most-constrained ingredient's stock ratio scales the
+/// reference directly. Returns null when nothing tracked limits it —
+/// typically because PG and VG are untracked.
+double? maxBatchMl(
+  MixResult reference,
+  double referenceMl,
+  Iterable<Ingredient> inventory,
+) {
+  if (referenceMl <= 0) return null;
+  final need = <String, double>{};
+  for (final l in reference.lines) {
+    final id = l.ingredientId;
+    if (id == null || l.ml <= 0) continue;
+    need[id] = (need[id] ?? 0) + l.ml;
+  }
+  if (need.isEmpty) return null;
+
+  double? worst;
+  for (final ing in inventory) {
+    final n = need[ing.id];
+    if (n == null || n <= 0) continue;
+    final ratio = ing.stockMl / n;
+    if (worst == null || ratio < worst) worst = ratio;
+  }
+  return worst == null ? null : worst * referenceMl;
+}
+
 List<StockIssue> checkStock(MixResult r, Iterable<Ingredient> inventory) {
   final needed = <String, double>{};
   for (final l in r.lines) {
@@ -783,6 +855,7 @@ class MixLog {
     this.rating,
     this.tastingNotes = '',
     this.ratedAt,
+    this.hardwareCost = 0,
   });
 
   final String id;
@@ -810,6 +883,12 @@ class MixLog {
   final int? rating;
   final String tastingNotes;
   final DateTime? ratedAt;
+
+  /// Bottles and consumables at mix time. Separate from [totalCost] so the
+  /// juice cost stays comparable across batches.
+  final double hardwareCost;
+
+  double get grandTotalCost => totalCost + hardwareCost;
 
   int get daysSteeping => DateTime.now().difference(mixedAt).inDays;
 
@@ -840,6 +919,7 @@ class MixLog {
     actualVgPercent: actualVgPercent,
     totalGrams: totalGrams,
     totalCost: totalCost,
+    hardwareCost: hardwareCost,
     lines: lines,
     weighed: weighed,
     rating: clearRating ? null : (rating ?? this.rating),
@@ -859,6 +939,7 @@ class MixLog {
     'actualVgPercent': actualVgPercent,
     'totalGrams': totalGrams,
     'totalCost': totalCost,
+    'hardwareCost': hardwareCost,
     'weighed': weighed,
     'rating': rating,
     'tastingNotes': tastingNotes,
@@ -887,6 +968,7 @@ class MixLog {
         0,
     totalGrams: (j['totalGrams'] as num?)?.toDouble() ?? 0,
     totalCost: (j['totalCost'] as num?)?.toDouble() ?? 0,
+    hardwareCost: (j['hardwareCost'] as num?)?.toDouble() ?? 0,
     weighed: j['weighed'] as bool? ?? false,
     rating: (j['rating'] as num?)?.toInt(),
     tastingNotes: j['tastingNotes'] as String? ?? '',

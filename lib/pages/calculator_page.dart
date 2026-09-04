@@ -635,10 +635,26 @@ class _CalculatorPageState extends State<CalculatorPage> {
                   color: theme.colorScheme.outline,
                 ),
               ),
-            Text(
-              'Bottle cost: ${money(r.totalCost, set)}  •  per '
-              '${ref.toStringAsFixed(0)} mL: '
-              '${money(r.totalMl > 0 ? r.totalCost / r.totalMl * ref : 0, set)}',
+            Builder(
+              builder: (context) {
+                final hardware = hardwareCostFor(r.totalMl, set);
+                final grand = r.totalCost + hardware;
+                final perRef = r.totalMl > 0 ? grand / r.totalMl * ref : 0.0;
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Juice cost: ${money(r.totalCost, set)}'),
+                    if (hardware > 0)
+                      Text(
+                        'Hardware: ${money(hardware, set)}  →  total '
+                        '${money(grand, set)}',
+                      ),
+                    Text(
+                      'Per ${ref.toStringAsFixed(0)} mL: ${money(perRef, set)}',
+                    ),
+                  ],
+                );
+              },
             ),
             for (final w in r.warnings)
               Padding(

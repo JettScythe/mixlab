@@ -1649,4 +1649,153 @@ some line with no numbers at all
       expect(moneyPerMl(0.1234, Settings()), '0.123 USD/mL');
     });
   });
+
+  group('hardware costs', () {
+    test('off by default, so existing figures do not move', () {
+      expect(hardwareCostFor(30, Settings()), 0);
+    });
+
+    test('counts whole bottles plus consumables', () {
+      final s = Settings(
+        includeHardware: true,
+        emptyBottleCost: 0.40,
+        emptyBottleMl: 30,
+        consumablesCost: 0.10,
+      );
+      expect(hardwareCostFor(30, s), closeTo(0.50, 1e-9)); // 1 bottle
+      expect(hardwareCostFor(31, s), closeTo(0.90, 1e-9)); // 2 bottles
+      expect(hardwareCostFor(100, s), closeTo(1.70, 1e-9)); // 4 bottles
+      expect(hardwareCostFor(0, s), 0);
+    });
+
+    test('logMix records it separately from juice cost', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false)
+        ..settings = Settings(
+          includeHardware: true,
+          emptyBottleCost: 1,
+          emptyBottleMl: 30,
+        );
+      final f = flavor('a', stock: 1000);
+      s.ingredients.add(f);
+
+      final log = s.logMix(
+        calculateMix(
+          amountMl: 60,
+          targetNic: 0,
+          targetVgPercent: 50,
+          settings: s.settings,
+          flavors: [(f, 10)],
+        ),
+      );
+      expect(log.hardwareCost, closeTo(2, 1e-9)); // two 30 mL bottles
+      expect(log.totalCost, closeTo(0.6, 1e-9)); // juice only
+      expect(log.grandTotalCost, closeTo(2.6, 1e-9));
+    });
+  });
+
+  group('shipping in the cost basis', () {
+    test('lands in the weighted average', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      final e = Ingredient(
+        id: 'v',
+        name: 'VG',
+        kind: IngredientKind.vg,
+        density: 1.261,
+        bottleSizeMl: 100,
+        bottleCost: 10,
+        stockMl: 0, // empty, so the new basis is purely this purchase
+      );
+      s.ingredients.add(e);
+
+      final p = s.recordPurchase(
+        ingredientId: 'v',
+        volumeMl: 100,
+        cost: 10,
+        shippingCost: 5,
+      );
+      expect(p.totalCost, 15);
+      expect(e.costPerMl, closeTo(0.15, 1e-9));
+      expect(s.lifetimeSpend, 15);
+    });
+
+    test('undo still restores the old basis exactly', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      final e = Ingredient(
+        id: 'v',
+        name: 'VG',
+        kind: IngredientKind.vg,
+        density: 1.261,
+        bottleSizeMl: 100,
+        bottleCost: 10,
+        stockMl: 100,
+      );
+      s.ingredients.add(e);
+
+      final p = s.recordPurchase(
+        ingredientId: 'v',
+        volumeMl: 100,
+        cost: 10,
+        shippingCost: 8,
+      );
+      s.undoPurchase(p.id);
+      expect(e.stockMl, closeTo(100, 1e-9));
+      expect(e.costPerMl, closeTo(0.10, 1e-9));
+    });
+  });
+
+  group('what can I make', () {
+    AppState withStock(double flavorStock) {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      s.ingredients.add(flavor('a', stock: flavorStock));
+      s.recipes.add(
+        Recipe(
+          id: 'r',
+          name: 'R',
+          batchMl: 30,
+          targetNic: 0,
+          targetVgPercent: 70,
+          flavors: [RecipeFlavor(ingredientId: 'a', name: 'a', percent: 10)],
+        ),
+      );
+      return s;
+    }
+
+    test('capacity scales from the limiting ingredient', () {
+      final s = withStock(9); // 10% of a batch, so 9 mL supports 90 mL
+      expect(s.capacityFor(s.recipes.single), closeTo(90, 1e-6));
+      expect(s.canMakeNow(s.recipes.single), isTrue);
+    });
+
+    test('short stock reports a partial batch and blocks', () {
+      final s = withStock(1.5); // supports only 15 mL
+      expect(s.capacityFor(s.recipes.single), closeTo(15, 1e-6));
+      expect(s.canMakeNow(s.recipes.single), isFalse);
+    });
+
+    test('a missing ingredient means it cannot be made', () {
+      final s = withStock(100);
+      s.removeIngredient('a');
+      expect(s.canMakeNow(s.recipes.single), isFalse);
+    });
+
+    test('untracked bases give an unlimited result', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      s.recipes.add(Recipe(id: 'r', name: 'Base only', batchMl: 30));
+      expect(s.capacityFor(s.recipes.single), isNull);
+      expect(s.canMakeNow(s.recipes.single), isTrue);
+    });
+
+    test('respects by-weight recipes too', () {
+      final s = withStock(9);
+      s.recipes.single.percentMode = PercentMode.byWeight;
+      final cap = s.capacityFor(s.recipes.single);
+      expect(cap, isNotNull);
+      expect(cap!, greaterThan(60)); // scales, just not identically
+    });
+  });
 }

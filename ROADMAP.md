@@ -7,6 +7,9 @@ This is a personal project shipped in the open. Priorities reflect what
 is actually annoying while mixing, not what would look impressive. Items
 move up when real use proves they matter.
 
+Completed milestones are removed rather than accumulating as checked
+boxes. See [Releases](../../releases) for what actually shipped when.
+
 ## Principles
 
 - **Correctness over features.** A calculator that is quietly wrong is
@@ -18,51 +21,13 @@ move up when real use proves they matter.
   does not do. That list stays accurate.
 - **Destructive actions are always undoable** or always confirmed.
 
-## v0.2 — Mixing model completeness
-
-The current engine assumes percentages are by volume, every concentrate
-counts as flavor, and nicotine is measured in mg/mL. That covers most
-DIY, not all of it.
-
-- [x] **Percent by weight.** Per-recipe toggle stored on `Recipe`.
-      Volume and weight percentages differ by up to ~20% on VG-heavy
-      mixes, so the mode must be explicit and visible, never inferred.
-      The README currently claims "weight-first" while percentages are
-      volume-based — this closes that gap.
-- [x] **Max-VG mode.** No PG beyond what concentrates carry in. A large
-      share of mixers work this way and it is currently inexpressible.
-- [x] **Additive and thinner ingredient kinds.** Sucralose, WS-23, EM
-      and distilled water behave like flavors but should not count
-      toward the flavor percentage.
-- [x] **Nicotine salts and mg/g bases.** Requires a strength-unit field
-      on `Ingredient` and a branch in the nicotine volume calculation.
-- [ ] **Multiple nicotine bases in one mix**, for blending strengths.
-
-## v0.3 — Cost accuracy
-
-Cost per bottle is currently systematically low because it only counts
-liquid.
-
-- [ ] **Hardware costs.** Bottle, cap, and label as configurable
-      per-batch line items.
-- [ ] **Shipping amortization** spread across a purchase, so restocking
-      reflects what an order actually cost.
-- [ ] **Event-sourced stock.** Derive `stockMl` from purchases, mixes
-      and manual adjustments rather than storing a mutable number. Makes
-      cost history reconstructable and every adjustment auditable.
-- [ ] **FIFO cost basis** as an alternative to weighted average.
-- [ ] **Shopping list.** Low-stock ingredients plus what a selected
-      recipe would need, with the shortfall per item.
-- [ ] **"What can I make?"** — recipes fully mixable from current stock.
 
 ## v0.4 — Recipes in and out
 
 The biggest reach item. MixLab has no recipe community and does not need
 one, but it should interoperate with the places that do.
 
-- [x] **Paste import from ELR and AllTheFlavors.** Line-oriented, so a
-      text parser gets most of the way. Brand matching against inventory
-      is already tractable thanks to the `brand` field.
+- [ ] **FIFO cost basis** as an alternative to weighted average.
 - [ ] **URL import** for the same sites, if the paste parser proves out.
 - [ ] **Single-recipe export** as shareable plain text.
 - [ ] **CSV export** of inventory, recipes and mix history for
@@ -78,7 +43,7 @@ Deferred, not abandoned. The layouts already respond below 700px and
 `shared_preferences` works on both platforms, so this is mostly
 packaging.
 
-- [ ] **Android APK in CI.** Release signing via repository secrets,
+- [x] **Android APK in CI.** Release signing via repository secrets,
       `--split-per-abi` for size, artifacts attached to releases.
       No ongoing cost, no expiry, sideload install. This is the easy
       one and will likely land first.
@@ -93,6 +58,12 @@ packaging.
       fix.
 - [ ] **Backup transfer between devices.** Export on desktop, import on
       phone. No sync is planned — that would mean a server.
+- [ ] **Multiple nicotine bases in one mix.** Blending two strengths means
+  `calculateMix` taking a list and solving a small system for the mix.
+  Meaningful work for something most mixers never do — a single base
+  covers the normal case, and mg/g support closed the gap that actually
+  mattered.
+
 
 ## v1.0 — Distribution
 

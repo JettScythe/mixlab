@@ -20,6 +20,7 @@ class _InventoryPageState extends State<InventoryPage> {
   final _search = TextEditingController();
   bool _lowOnly = false;
   String? _brand;
+  IngredientKind? _kind;
 
   AppState get state => widget.state;
 
@@ -33,7 +34,6 @@ class _InventoryPageState extends State<InventoryPage> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final set = state.settings;
-    final noneAtAll = state.ingredients.isEmpty;
 
     var items = searchIngredients(state.ingredients, _search.text);
     if (_search.text.trim().isEmpty) {
@@ -44,15 +44,19 @@ class _InventoryPageState extends State<InventoryPage> {
         return b2 != 0 ? b2 : a.name.compareTo(b.name);
       });
     }
-    if (_brand != null) {
-      items = items.where((e) => e.brand == _brand).toList();
-    }
+    if (_kind != null) items = items.where((e) => e.kind == _kind).toList();
+    if (_brand != null) items = items.where((e) => e.brand == _brand).toList();
     if (_lowOnly) {
       items = items.where((e) => e.stockMl <= set.lowStockMl).toList();
     }
+
     final brands = state.brands;
     final suspect = state.suspectDensities;
-    final filtered = _brand != null || _lowOnly || _search.text.isNotEmpty;
+    final filtered =
+        _kind != null ||
+        _brand != null ||
+        _lowOnly ||
+        _search.text.trim().isNotEmpty;
 
     return Padding(
       padding: const EdgeInsets.all(Gap.lg),
@@ -64,8 +68,10 @@ class _InventoryPageState extends State<InventoryPage> {
               Expanded(
                 child: Text('Inventory', style: theme.textTheme.headlineSmall),
               ),
-              if (!noneAtAll)
-                Text('Stock value: ${money(state.stockValue, set)}'),
+              Text(
+                'Stock value ${money(state.stockValue, set)}',
+                style: theme.textTheme.bodyMedium,
+              ),
               Gap.hMd,
               FilledButton.icon(
                 onPressed: () => _edit(null),
@@ -74,102 +80,125 @@ class _InventoryPageState extends State<InventoryPage> {
               ),
             ],
           ),
-          if (suspect.isNotEmpty) _densityBanner(suspect),
-          if (!noneAtAll) ...[
-            Gap.vMd,
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _search,
-                    onChanged: (_) => setState(() {}),
-                    decoration: InputDecoration(
-                      prefixIcon: const Icon(Icons.search),
-                      hintText: 'Search brand or name (try "cap custard")',
-                      suffixIcon: _search.text.isEmpty
-                          ? null
-                          : IconButton(
-                              icon: const Icon(Icons.clear),
-                              onPressed: () => setState(_search.clear),
-                            ),
-                    ),
+          if (suspect.isNotEmpty) _densityBanner(theme, suspect),
+          Gap.vMd,
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _search,
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.search),
+                    hintText: 'Search brand or name (try "cap custard")',
+                    suffixIcon: _search.text.isEmpty
+                        ? null
+                        : IconButton(
+                            icon: const Icon(Icons.clear),
+                            onPressed: () => setState(_search.clear),
+                          ),
                   ),
                 ),
-                Gap.hMd,
-                FilterChip(
-                  label: const Text('Low stock'),
-                  selected: _lowOnly,
-                  onSelected: (v) => setState(() => _lowOnly = v),
+              ),
+              Gap.hMd,
+              FilterChip(
+                label: const Text('Low stock'),
+                selected: _lowOnly,
+                onSelected: (v) => setState(() => _lowOnly = v),
+              ),
+            ],
+          ),
+          Gap.vSm,
+          SizedBox(
+            height: 40,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: FilterChip(
+                    label: const Text('All kinds'),
+                    selected: _kind == null,
+                    onSelected: (_) => setState(() => _kind = null),
+                  ),
                 ),
+                for (final k in IngredientKind.values)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: FilterChip(
+                      label: Text(kindLabel(k)),
+                      selected: _kind == k,
+                      onSelected: (v) => setState(() => _kind = v ? k : null),
+                    ),
+                  ),
               ],
             ),
-            if (brands.isNotEmpty) ...[
-              Gap.vSm,
-              SizedBox(
-                height: 40,
-                child: ListView(
-                  scrollDirection: Axis.horizontal,
-                  children: [
+          ),
+          if (brands.isNotEmpty) ...[
+            Gap.vXs,
+            SizedBox(
+              height: 40,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: FilterChip(
+                      label: const Text('All brands'),
+                      selected: _brand == null,
+                      onSelected: (_) => setState(() => _brand = null),
+                    ),
+                  ),
+                  for (final b in brands)
                     Padding(
                       padding: const EdgeInsets.only(right: 6),
                       child: FilterChip(
-                        label: const Text('All brands'),
-                        selected: _brand == null,
-                        onSelected: (_) => setState(() => _brand = null),
+                        label: Text(b),
+                        tooltip: knownBrands[b],
+                        selected: _brand == b,
+                        onSelected: (v) =>
+                            setState(() => _brand = v ? b : null),
                       ),
                     ),
-                    for (final b in brands)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 6),
-                        child: FilterChip(
-                          label: Text(b),
-                          tooltip: knownBrands[b],
-                          selected: _brand == b,
-                          onSelected: (v) =>
-                              setState(() => _brand = v ? b : null),
-                        ),
-                      ),
-                  ],
-                ),
+                ],
               ),
-            ],
-            Gap.vMd,
-            Text(
-              '${items.length} of ${state.ingredients.length} shown',
-              style: theme.textTheme.bodySmall,
             ),
-            Gap.vXs,
           ],
+          Gap.vSm,
+          Text(
+            '${items.length} of ${state.ingredients.length} shown',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.outline,
+            ),
+          ),
+          Gap.vXs,
           Expanded(
-            child: noneAtAll
-                ? EmptyState(
-                    icon: Icons.inventory_2_outlined,
-                    title: 'Nothing in your stash',
-                    message:
-                        'Add your PG, VG, nicotine base and flavors here. '
-                        'Bottle size and price make cost-per-bottle work.',
-                    actionLabel: 'Add ingredient',
-                    onAction: () => _edit(null),
-                  )
-                : items.isEmpty
-                ? EmptyState(
-                    icon: Icons.search_off,
-                    title: 'Nothing matches',
-                    message: filtered
-                        ? 'Try clearing the search or filters.'
-                        : null,
-                    actionLabel: filtered ? 'Clear filters' : 'Add ingredient',
-                    onAction: filtered
-                        ? () => setState(() {
+            child: items.isEmpty
+                ? (filtered
+                      ? EmptyState(
+                          icon: Icons.filter_alt_off_outlined,
+                          title: 'Nothing matches',
+                          message: 'Try clearing the filters.',
+                          actionLabel: 'Clear filters',
+                          onAction: () => setState(() {
                             _search.clear();
                             _lowOnly = false;
                             _brand = null;
-                          })
-                        : () => _edit(null),
-                  )
+                            _kind = null;
+                          }),
+                        )
+                      : EmptyState(
+                          icon: Icons.inventory_2_outlined,
+                          title: 'Nothing in stock',
+                          message:
+                              'Add your PG, VG, nicotine and flavors so the '
+                              'calculator can track stock and cost.',
+                          actionLabel: 'Add ingredient',
+                          onAction: () => _edit(null),
+                        ))
                 : ListView.builder(
                     itemCount: items.length,
-                    itemBuilder: (context, i) => _tile(items[i]),
+                    itemBuilder: (context, i) => _tile(theme, items[i]),
                   ),
           ),
         ],
@@ -177,37 +206,31 @@ class _InventoryPageState extends State<InventoryPage> {
     );
   }
 
-  Widget _densityBanner(List<Ingredient> suspect) {
-    final theme = Theme.of(context);
-    return Container(
-      margin: const EdgeInsets.only(top: Gap.md),
-      padding: const EdgeInsets.all(Gap.md),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.tertiaryContainer,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            Icons.info_outline,
-            color: theme.colorScheme.onTertiaryContainer,
+  Widget _densityBanner(ThemeData theme, List<Ingredient> suspect) => Container(
+    margin: const EdgeInsets.only(top: Gap.md),
+    padding: const EdgeInsets.all(Gap.md),
+    decoration: BoxDecoration(
+      color: theme.colorScheme.tertiaryContainer,
+      borderRadius: BorderRadius.circular(8),
+    ),
+    child: Row(
+      children: [
+        Icon(Icons.info_outline, color: theme.colorScheme.onTertiaryContainer),
+        Gap.hSm,
+        Expanded(
+          child: Text(
+            '${suspect.length} ingredient(s) have a density that does not '
+            'match their carrier — gram amounts for these will be off.',
+            style: TextStyle(color: theme.colorScheme.onTertiaryContainer),
           ),
-          Gap.hSm,
-          Expanded(
-            child: Text(
-              '${suspect.length} ingredient(s) have a density that does not '
-              'match their carrier — gram amounts for these will be off.',
-              style: TextStyle(color: theme.colorScheme.onTertiaryContainer),
-            ),
-          ),
-          TextButton(
-            onPressed: () => _fixDensities(suspect),
-            child: const Text('Fix all'),
-          ),
-        ],
-      ),
-    );
-  }
+        ),
+        TextButton(
+          onPressed: () => _fixDensities(suspect),
+          child: const Text('Fix all'),
+        ),
+      ],
+    ),
+  );
 
   Future<void> _fixDensities(List<Ingredient> suspect) async {
     final ok = await showDialog<bool>(
@@ -236,12 +259,14 @@ class _InventoryPageState extends State<InventoryPage> {
       e.density = state.settings.densityForCarrier(e.kind, e.carrierVg);
       state.upsertIngredient(e);
     }
+    if (!mounted) return;
+    showToast(context, 'Recalculated ${suspect.length} densities.');
   }
 
-  Widget _tile(Ingredient e) {
+  Widget _tile(ThemeData theme, Ingredient e) {
     final set = state.settings;
     final low = e.stockMl <= set.lowStockMl;
-    final theme = Theme.of(context);
+    final isNic = e.kind == IngredientKind.nicotine;
 
     return Card(
       child: ListTile(
@@ -261,27 +286,28 @@ class _InventoryPageState extends State<InventoryPage> {
         title: Row(
           children: [
             Flexible(child: Text(e.name, overflow: TextOverflow.ellipsis)),
+            if (e.nicIsSalt)
+              const Padding(
+                padding: EdgeInsets.only(left: 6),
+                child: Chip(
+                  label: Text('salt'),
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                ),
+              ),
             if (e.densityLooksWrong(set))
               Padding(
                 padding: const EdgeInsets.only(left: 6),
                 child: Tooltip(
                   message:
-                      'Density ${e.density.toStringAsFixed(3)} does not '
-                      'match carrier; expected '
+                      'Density ${e.density.toStringAsFixed(3)} does not match '
+                      'carrier; expected '
                       '${set.densityForCarrier(e.kind, e.carrierVg).toStringAsFixed(3)}',
                   child: Icon(
                     Icons.info_outline,
                     size: 16,
                     color: theme.colorScheme.tertiary,
                   ),
-                ),
-              ),
-            if (e.nicIsSalt)
-              const Padding(
-                padding: EdgeInsets.only(left: 6),
-                child: Tooltip(
-                  message: 'Nicotine salt',
-                  child: Icon(Icons.grain, size: 15),
                 ),
               ),
           ],
@@ -292,7 +318,8 @@ class _InventoryPageState extends State<InventoryPage> {
           '(${e.stockGrams.toStringAsFixed(1)} g) on hand • '
           '${moneyPerMl(e.costPerMl, set)}'
           '${e.avgCostPerMl > 0 ? ' (avg)' : ''}'
-          '${e.kind == IngredientKind.nicotine ? ' • ${e.nicStrength.toStringAsFixed(0)} ${nicUnitLabel(e.nicUnit)}' : ''}',
+          '${isNic ? ' • ${e.nicStrength.toStringAsFixed(0)} ${nicUnitLabel(e.nicUnit)}'
+                    '${e.nicUnit == NicUnit.perGram ? ' (${e.nicMgPerMl.toStringAsFixed(0)} mg/mL)' : ''}' : ''}',
         ),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
@@ -313,10 +340,12 @@ class _InventoryPageState extends State<InventoryPage> {
             ),
             IconButton(
               icon: const Icon(Icons.edit_outlined),
+              tooltip: 'Edit',
               onPressed: () => _edit(e),
             ),
             IconButton(
               icon: const Icon(Icons.delete_outline),
+              tooltip: 'Delete',
               onPressed: () => _confirmDelete(e),
             ),
           ],
@@ -333,8 +362,8 @@ class _InventoryPageState extends State<InventoryPage> {
     if (p == null || !mounted) return;
     showToast(
       context,
-      'Added ${p.volumeMl.toStringAsFixed(0)} mL of ${p.ingredientName} '
-      'for ${money(p.cost, state.settings)}.',
+      'Added ${p.volumeMl.toStringAsFixed(0)} mL of ${p.ingredientName} for '
+      '${money(p.totalCost, state.settings)}.',
       action: SnackBarAction(
         label: 'Undo',
         onPressed: () => state.undoPurchase(p.id),
@@ -429,7 +458,7 @@ class _RestockDialog extends StatefulWidget {
 }
 
 class _RestockDialogState extends State<_RestockDialog> {
-  late final TextEditingController vol, cost;
+  late final TextEditingController vol, cost, shipping;
   bool weighted = true;
 
   @override
@@ -442,12 +471,14 @@ class _RestockDialogState extends State<_RestockDialog> {
     cost = TextEditingController(
       text: e.bottleCost > 0 ? e.bottleCost.toStringAsFixed(2) : '',
     );
+    shipping = TextEditingController();
   }
 
   @override
   void dispose() {
     vol.dispose();
     cost.dispose();
+    shipping.dispose();
     super.dispose();
   }
 
@@ -457,9 +488,12 @@ class _RestockDialogState extends State<_RestockDialog> {
     final set = widget.state.settings;
     final v = parseNum(vol.text);
     final c = parseNum(cost.text);
+    final ship = parseNum(shipping.text) ?? 0;
     final valid = v != null && v > 0 && c != null;
 
-    final newPerMl = valid ? c / v : 0.0;
+    // Shipping is part of what the liquid actually cost you.
+    final landed = (c ?? 0) + ship;
+    final newPerMl = valid ? landed / v : 0.0;
     final denom = e.stockMl + (v ?? 0);
     final blended = valid && denom > 0
         ? (e.stockMl * e.costPerMl + v * newPerMl) / denom
@@ -469,69 +503,87 @@ class _RestockDialogState extends State<_RestockDialog> {
     return AlertDialog(
       title: Text('Restock ${e.displayName}'),
       content: SizedBox(
-        width: 380,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: vol,
-                    autofocus: true,
-                    keyboardType: const TextInputType.numberWithOptions(
-                      decimal: true,
-                    ),
-                    onChanged: (_) => setState(() {}),
-                    decoration: InputDecoration(
-                      labelText: 'Volume added (mL)',
-                      errorText: vol.text.trim().isNotEmpty && v == null
-                          ? 'Number?'
-                          : null,
-                    ),
-                  ),
-                ),
-                Gap.hSm,
-                Expanded(
-                  child: TextField(
-                    controller: cost,
-                    keyboardType: const TextInputType.numberWithOptions(
-                      decimal: true,
-                    ),
-                    onChanged: (_) => setState(() {}),
-                    decoration: InputDecoration(
-                      labelText: 'Price paid (${set.currency})',
-                      errorText: cost.text.trim().isNotEmpty && c == null
-                          ? 'Number?'
-                          : null,
+        width: 400,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: vol,
+                      autofocus: true,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                      onChanged: (_) => setState(() {}),
+                      decoration: InputDecoration(
+                        labelText: 'Volume added (mL)',
+                        errorText: vol.text.trim().isNotEmpty && v == null
+                            ? 'Number?'
+                            : null,
+                      ),
                     ),
                   ),
-                ),
-              ],
-            ),
-            Gap.vMd,
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('Blend with existing stock'),
-              subtitle: const Text(
-                'Weighted average cost basis. Off: this purchase price '
-                'replaces the basis.',
+                  Gap.hSm,
+                  Expanded(
+                    child: TextField(
+                      controller: cost,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                      onChanged: (_) => setState(() {}),
+                      decoration: InputDecoration(
+                        labelText: 'Price paid (${set.currency})',
+                        errorText: cost.text.trim().isNotEmpty && c == null
+                            ? 'Number?'
+                            : null,
+                      ),
+                    ),
+                  ),
+                ],
               ),
-              value: weighted,
-              onChanged: (x) => setState(() => weighted = x),
-            ),
-            const Divider(),
-            _row(
-              'Stock',
-              '${e.stockMl.toStringAsFixed(1)} mL',
-              '${(e.stockMl + (v ?? 0)).toStringAsFixed(1)} mL',
-            ),
-            _row(
-              'Cost basis',
-              moneyPerMl(e.costPerMl, set),
-              moneyPerMl(resultBasis, set),
-            ),
-          ],
+              Gap.vSm,
+              TextField(
+                controller: shipping,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                onChanged: (_) => setState(() {}),
+                decoration: InputDecoration(
+                  labelText: 'Shipping share (${set.currency}, optional)',
+                  helperText:
+                      "Your cut of the order's shipping. Folded into the "
+                      'cost basis.',
+                ),
+              ),
+              Gap.vMd,
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Blend with existing stock'),
+                subtitle: const Text(
+                  'Weighted average cost basis. Off: this purchase price '
+                  'replaces the basis.',
+                ),
+                value: weighted,
+                onChanged: (x) => setState(() => weighted = x),
+              ),
+              const Divider(),
+              _row(
+                'Stock',
+                '${e.stockMl.toStringAsFixed(1)} mL',
+                '${(e.stockMl + (v ?? 0)).toStringAsFixed(1)} mL',
+              ),
+              _row(
+                'Cost basis',
+                moneyPerMl(e.costPerMl, set),
+                moneyPerMl(resultBasis, set),
+              ),
+              if (ship > 0)
+                _row('Landed cost', money(c ?? 0, set), money(landed, set)),
+            ],
+          ),
         ),
       ),
       actions: [
@@ -548,6 +600,7 @@ class _RestockDialogState extends State<_RestockDialog> {
                     ingredientId: e.id,
                     volumeMl: v,
                     cost: c,
+                    shippingCost: ship,
                     useWeightedAverage: weighted,
                   ),
                 ),
@@ -562,7 +615,10 @@ class _RestockDialogState extends State<_RestockDialog> {
     child: Row(
       children: [
         Expanded(child: Text(label)),
-        Text(before, style: TextStyle(color: Theme.of(context).hintColor)),
+        Text(
+          before,
+          style: TextStyle(color: Theme.of(context).colorScheme.outline),
+        ),
         const Padding(
           padding: EdgeInsets.symmetric(horizontal: 6),
           child: Icon(Icons.arrow_forward, size: 14),

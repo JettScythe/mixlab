@@ -73,7 +73,9 @@ Rough positioning first:
 | Restock log with weighted-average cost basis | Yes | No | No | No | No |
 | Low-stock flags and filter | Yes | No | Yes | No | No |
 | Shortfall check before you start mixing | Yes | No | Partial | No | No |
-| Bottle, cap and shipping costs | No | No | Partial | No | No |
+| Bottle, cap and shipping costs | Yes | No | Partial | No | No |
+| Shows what you can mix from current stock | Yes | No | Partial | No | No |
+
 
 ### Recipes and history
 
@@ -144,6 +146,10 @@ macOS: extract, then double-click `mixlab.app`. macOS will block it
 because the build is unsigned — open **System Settings → Privacy &
 Security**, scroll to the message about mixlab, and click **Open
 Anyway**. You only need to do this once.
+
+
+Android: download `app-arm64-v8a-release.apk` and tap it. Android will
+ask permission to install from an unknown source — allow it once.
 
 ```bash
 tar -xzf mixlab-macos.tar.gz

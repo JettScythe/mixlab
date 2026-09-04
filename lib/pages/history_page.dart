@@ -5,6 +5,7 @@ import '../state.dart';
 import '../theme.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/star_rating.dart';
+import '../widgets/toast.dart';
 import 'recipe_detail_page.dart';
 
 enum _Filter { all, rated, unrated, weighed }
@@ -74,8 +75,8 @@ class _HistoryPageState extends State<HistoryPage> {
     final theme = Theme.of(context);
     final set = state.settings;
     final logs = _visible;
-    final noneAtAll = state.mixLog.isEmpty;
     final rated = state.ratedMixCount;
+    final hardware = state.lifetimeHardwareCost;
 
     return Padding(
       padding: const EdgeInsets.all(Gap.lg),
@@ -90,83 +91,76 @@ class _HistoryPageState extends State<HistoryPage> {
                   style: theme.textTheme.headlineSmall,
                 ),
               ),
-              if (!noneAtAll)
-                Flexible(
-                  child: Text(
-                    '${state.mixLog.length} mixes  •  $rated rated  •  '
-                    '${money(state.lifetimeMixCost, set)} of juice',
-                    textAlign: TextAlign.right,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodySmall,
-                  ),
+              Flexible(
+                child: Text(
+                  '${state.mixLog.length} mixes  •  $rated rated  •  '
+                  '${money(state.lifetimeMixCost + hardware, set)} of juice',
+                  textAlign: TextAlign.right,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall,
                 ),
+              ),
             ],
           ),
-          if (!noneAtAll) ...[
-            Gap.vMd,
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _search,
-                    onChanged: (_) => setState(() {}),
-                    decoration: InputDecoration(
-                      prefixIcon: const Icon(Icons.search),
-                      hintText: 'Search name, notes or ingredient',
-                      suffixIcon: _search.text.isEmpty
-                          ? null
-                          : IconButton(
-                              icon: const Icon(Icons.clear),
-                              onPressed: () => setState(_search.clear),
-                            ),
-                    ),
+          Gap.vMd,
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _search,
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.search),
+                    hintText: 'Search name, notes or ingredient',
+                    suffixIcon: _search.text.isEmpty
+                        ? null
+                        : IconButton(
+                            icon: const Icon(Icons.clear),
+                            onPressed: () => setState(_search.clear),
+                          ),
                   ),
                 ),
-                Gap.hMd,
-                PopupMenuButton<_Filter>(
-                  initialValue: _filter,
-                  onSelected: (v) => setState(() => _filter = v),
-                  tooltip: 'Filter',
-                  itemBuilder: (context) => [
-                    for (final v in _Filter.values)
-                      PopupMenuItem(value: v, child: Text(_filterLabel(v))),
-                  ],
-                  child: Chip(
-                    avatar: const Icon(Icons.filter_list, size: 18),
-                    label: Text(_filterLabel(_filter)),
-                  ),
+              ),
+              Gap.hMd,
+              PopupMenuButton<_Filter>(
+                initialValue: _filter,
+                onSelected: (v) => setState(() => _filter = v),
+                tooltip: 'Filter',
+                itemBuilder: (context) => [
+                  for (final v in _Filter.values)
+                    PopupMenuItem(value: v, child: Text(_filterLabel(v))),
+                ],
+                child: Chip(
+                  avatar: const Icon(Icons.filter_list, size: 18),
+                  label: Text(_filterLabel(_filter)),
                 ),
-              ],
-            ),
-            Gap.vMd,
-          ],
+              ),
+            ],
+          ),
+          Gap.vMd,
           Expanded(
-            child: noneAtAll
-                ? EmptyState(
-                    icon: Icons.history,
-                    title: 'No mixes logged yet',
-                    message:
-                        'Build a mix on the Mix tab and log it. Every batch '
-                        'lands here with what it cost, what it actually came '
-                        'out at, and room for tasting notes.',
-                    actionLabel: 'Go to the Mix tab',
-                    onAction: widget.onMix,
-                  )
-                : logs.isEmpty
-                ? EmptyState(
-                    icon: Icons.filter_list_off,
-                    title: 'Nothing matches',
-                    message: _filter == _Filter.all
-                        ? 'No mix name, note or ingredient contains '
-                              '"${_search.text.trim()}".'
-                        : 'No mixes match the '
-                              '"${_filterLabel(_filter)}" filter.',
-                    actionLabel: 'Reset filters',
-                    onAction: () => setState(() {
-                      _search.clear();
-                      _filter = _Filter.all;
-                    }),
-                  )
+            child: logs.isEmpty
+                ? (state.mixLog.isEmpty
+                      ? EmptyState(
+                          icon: Icons.history_outlined,
+                          title: 'No mixes logged yet',
+                          message:
+                              'Build a mix and log it, and every batch shows '
+                              'up here with what it cost and how it turned '
+                              'out.',
+                          actionLabel: 'Go to the Mix tab',
+                          onAction: widget.onMix,
+                        )
+                      : EmptyState(
+                          icon: Icons.filter_alt_off_outlined,
+                          title: 'Nothing matches',
+                          message: 'Try a different search or filter.',
+                          actionLabel: 'Show all',
+                          onAction: () => setState(() {
+                            _search.clear();
+                            _filter = _Filter.all;
+                          }),
+                        ))
                 : ListView.builder(
                     itemCount: logs.length,
                     itemBuilder: (context, i) => _entry(context, logs[i], set),
@@ -189,7 +183,7 @@ class _HistoryPageState extends State<HistoryPage> {
             Flexible(child: Text(l.label, overflow: TextOverflow.ellipsis)),
             if (l.weighed)
               const Padding(
-                padding: EdgeInsets.only(left: Gap.xs),
+                padding: EdgeInsets.only(left: 6),
                 child: Tooltip(
                   message: 'Committed from weigh-along with real readings',
                   child: Icon(Icons.balance, size: 16),
@@ -197,7 +191,7 @@ class _HistoryPageState extends State<HistoryPage> {
               ),
             if (l.nicDrifted)
               Padding(
-                padding: const EdgeInsets.only(left: Gap.xs),
+                padding: const EdgeInsets.only(left: 6),
                 child: Tooltip(
                   message: 'Finished strength differs from the target',
                   child: Icon(
@@ -217,7 +211,7 @@ class _HistoryPageState extends State<HistoryPage> {
           '${l.totalGrams.toStringAsFixed(2)} g  •  '
           '${l.actualNic.toStringAsFixed(2)} mg  •  '
           '${l.actualVgPercent.toStringAsFixed(0)}% VG  •  '
-          '${money(l.totalCost, set)}',
+          '${money(l.grandTotalCost, set)}',
         ),
         children: [
           Padding(
@@ -234,7 +228,20 @@ class _HistoryPageState extends State<HistoryPage> {
                       style: TextStyle(color: theme.colorScheme.tertiary),
                     ),
                   ),
+
                 _feedback(context, l, theme),
+
+                if (l.hardwareCost > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(top: Gap.md),
+                    child: Text(
+                      'Juice ${money(l.totalCost, set)} + hardware '
+                      '${money(l.hardwareCost, set)} = '
+                      '${money(l.grandTotalCost, set)}',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
+
                 const Divider(),
                 for (final line in l.lines)
                   Padding(
@@ -253,7 +260,7 @@ class _HistoryPageState extends State<HistoryPage> {
                         ),
                         if (line.deductedMl + 1e-9 < line.requestedMl)
                           Padding(
-                            padding: const EdgeInsets.only(left: Gap.xs),
+                            padding: const EdgeInsets.only(left: 6),
                             child: Tooltip(
                               message:
                                   'Short at mix time: needed '
@@ -268,6 +275,7 @@ class _HistoryPageState extends State<HistoryPage> {
                       ],
                     ),
                   ),
+
                 if (orphaned)
                   Padding(
                     padding: const EdgeInsets.only(top: Gap.sm),
@@ -279,6 +287,7 @@ class _HistoryPageState extends State<HistoryPage> {
                       ),
                     ),
                   ),
+
                 Gap.vMd,
                 Wrap(
                   spacing: Gap.sm,
@@ -375,14 +384,7 @@ class _HistoryPageState extends State<HistoryPage> {
   void _remix(MixLog l) {
     state.requestLoadRecipe(state.recipeFromLog(l));
     widget.onMix();
-    ScaffoldMessenger.of(context)
-      ..removeCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(
-          duration: toastShort,
-          content: Text('Loaded "${l.label}" into the calculator.'),
-        ),
-      );
+    showToast(context, 'Loaded "${l.label}" into the calculator.');
   }
 
   Future<void> _editNotes(MixLog l) async {
