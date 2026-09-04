@@ -3,6 +3,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../models.dart';
 import '../state.dart';
+import '../theme.dart';
 
 class StepModePage extends StatefulWidget {
   const StepModePage({
@@ -192,7 +193,7 @@ class _StepModePageState extends State<StepModePage> {
                 'Logging will deduct what is on hand and floor '
                 'these at zero:',
               ),
-              const SizedBox(height: 8),
+              Gap.vSm,
               for (final i in issues)
                 Text(
                   '• ${i.name}: short '
@@ -265,12 +266,12 @@ class _StepModePageState extends State<StepModePage> {
           ),
         ),
         body: ListView(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(Gap.lg),
           children: [
             for (final w in _plan.warnings)
               Container(
                 margin: const EdgeInsets.only(bottom: 12),
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.all(Gap.md),
                 decoration: BoxDecoration(
                   color: theme.colorScheme.tertiaryContainer,
                   borderRadius: BorderRadius.circular(8),
@@ -282,7 +283,7 @@ class _StepModePageState extends State<StepModePage> {
                       size: 18,
                       color: theme.colorScheme.onTertiaryContainer,
                     ),
-                    const SizedBox(width: 8),
+                    Gap.hSm,
                     Expanded(
                       child: Text(
                         w,
@@ -295,7 +296,7 @@ class _StepModePageState extends State<StepModePage> {
                 ),
               ),
             if (_done) _summary(theme) else _current(theme),
-            const SizedBox(height: 16),
+            Gap.vLg,
             Text('All steps', style: theme.textTheme.titleMedium),
             const SizedBox(height: 4),
             for (var k = 0; k < _plan.length; k++) _stepTile(k, theme),
@@ -328,7 +329,7 @@ class _StepModePageState extends State<StepModePage> {
             ),
             const SizedBox(height: 4),
             Text(line.name, style: theme.textTheme.headlineSmall),
-            const SizedBox(height: 16),
+            Gap.vLg,
             Text(
               _tare ? 'Tare, then add' : 'Scale should read',
               style: theme.textTheme.labelLarge,
@@ -386,10 +387,10 @@ class _StepModePageState extends State<StepModePage> {
               icon: const Icon(Icons.check),
               label: const Text('Done — on target'),
             ),
-            const SizedBox(height: 8),
+            Gap.vSm,
             Wrap(
-              spacing: 8,
-              runSpacing: 8,
+              spacing: Gap.sm,
+              runSpacing: Gap.sm,
               children: [
                 OutlinedButton.icon(
                   onPressed: _enterActual,
@@ -427,7 +428,7 @@ class _StepModePageState extends State<StepModePage> {
             Row(
               children: [
                 Icon(Icons.done_all, color: theme.colorScheme.primary),
-                const SizedBox(width: 8),
+                Gap.hSm,
                 Expanded(
                   child: Text(
                     'All ingredients added',
@@ -436,7 +437,7 @@ class _StepModePageState extends State<StepModePage> {
                 ),
               ],
             ),
-            const SizedBox(height: 12),
+            Gap.vMd,
             FittedBox(
               fit: BoxFit.scaleDown,
               alignment: Alignment.centerLeft,
@@ -452,7 +453,7 @@ class _StepModePageState extends State<StepModePage> {
               'target ${_g(target)} g  •  '
               '${drift >= 0 ? '+' : ''}${drift.toStringAsFixed(2)} g drift',
             ),
-            const SizedBox(height: 8),
+            Gap.vSm,
             Text(
               '${adjusted.totalMl.toStringAsFixed(2)} mL  •  '
               '${money(adjusted.totalCost, set)}',
@@ -481,7 +482,7 @@ class _StepModePageState extends State<StepModePage> {
               icon: const Icon(Icons.save_alt),
               label: const Text('Commit — log real weights'),
             ),
-            const SizedBox(height: 8),
+            Gap.vSm,
             OutlinedButton.icon(
               onPressed: () => _jumpTo(_plan.length - 1),
               icon: const Icon(Icons.undo),

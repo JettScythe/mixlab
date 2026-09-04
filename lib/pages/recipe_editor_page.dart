@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../models.dart';
 import '../state.dart';
+import '../theme.dart';
 import '../widgets/ingredient_picker.dart';
 
 /// Full-screen editor for creating or modifying a recipe.
@@ -228,23 +229,21 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
         ),
         body: LayoutBuilder(
           builder: (context, c) {
-            final wide = c.maxWidth > 900;
+            final wide = Breaks.isWide(c.maxWidth);
             final form = _form(theme);
             final preview = _preview(theme);
             return SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(Gap.lg),
               child: wide
                   ? Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Expanded(flex: 3, child: form),
-                        const SizedBox(width: 16),
+                        Gap.hLg,
                         Expanded(flex: 2, child: preview),
                       ],
                     )
-                  : Column(
-                      children: [form, const SizedBox(height: 16), preview],
-                    ),
+                  : Column(children: [form, Gap.vLg, preview]),
             );
           },
         ),

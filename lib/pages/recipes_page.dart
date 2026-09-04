@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 
-import '../widgets/star_rating.dart';
 import '../models.dart';
 import '../state.dart';
-import 'recipe_editor_page.dart';
-import 'recipe_detail_page.dart';
+import '../theme.dart';
+import '../widgets/empty_state.dart';
+import '../widgets/star_rating.dart';
 import 'import_page.dart';
+import 'recipe_detail_page.dart';
+import 'recipe_editor_page.dart';
 
 enum _Sort { name, flavorCount, flavorPercent, nicotine }
 
@@ -37,13 +39,6 @@ class _RecipesPageState extends State<RecipesPage> {
     _search.dispose();
     super.dispose();
   }
-
-  void _openDetail(Recipe r) => Navigator.of(context).push(
-    MaterialPageRoute<void>(
-      builder: (_) =>
-          RecipeDetailPage(state: state, recipeId: r.id, onMix: widget.onMix),
-    ),
-  );
 
   static String _ago(DateTime d) {
     final days = DateTime.now().difference(d).inDays;
@@ -89,9 +84,10 @@ class _RecipesPageState extends State<RecipesPage> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final recipes = _visible;
+    final noneAtAll = state.recipes.isEmpty;
 
     return Padding(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(Gap.lg),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -101,18 +97,11 @@ class _RecipesPageState extends State<RecipesPage> {
                 child: Text('Recipes', style: theme.textTheme.headlineSmall),
               ),
               OutlinedButton.icon(
-                onPressed: () async {
-                  final r = await Navigator.of(context).push<Recipe>(
-                    MaterialPageRoute(
-                      builder: (_) => ImportRecipePage(state: state),
-                    ),
-                  );
-                  if (r != null && context.mounted) setState(() {});
-                },
+                onPressed: _openImport,
                 icon: const Icon(Icons.content_paste_go),
                 label: const Text('Import'),
               ),
-              const SizedBox(width: 8),
+              Gap.hSm,
               FilledButton.icon(
                 onPressed: () => _openEditor(null),
                 icon: const Icon(Icons.add),
@@ -120,59 +109,69 @@ class _RecipesPageState extends State<RecipesPage> {
               ),
             ],
           ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _search,
-                  onChanged: (_) => setState(() {}),
-                  decoration: InputDecoration(
-                    isDense: true,
-                    prefixIcon: const Icon(Icons.search),
-                    hintText: 'Search name, notes or flavor',
-                    border: const OutlineInputBorder(),
-                    suffixIcon: _search.text.isEmpty
-                        ? null
-                        : IconButton(
-                            icon: const Icon(Icons.clear),
-                            onPressed: () => setState(_search.clear),
-                          ),
+          Gap.vMd,
+          if (!noneAtAll) ...[
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _search,
+                    onChanged: (_) => setState(() {}),
+                    decoration: InputDecoration(
+                      prefixIcon: const Icon(Icons.search),
+                      hintText: 'Search name, notes or flavor',
+                      suffixIcon: _search.text.isEmpty
+                          ? null
+                          : IconButton(
+                              icon: const Icon(Icons.clear),
+                              onPressed: () => setState(_search.clear),
+                            ),
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 12),
-              PopupMenuButton<_Sort>(
-                initialValue: _sort,
-                onSelected: (v) => setState(() => _sort = v),
-                tooltip: 'Sort',
-                itemBuilder: (context) => [
-                  for (final v in _Sort.values)
-                    PopupMenuItem(value: v, child: Text(_sortLabel(v))),
-                ],
-                child: Chip(
-                  avatar: const Icon(Icons.sort, size: 18),
-                  label: Text(_sortLabel(_sort)),
+                Gap.hMd,
+                PopupMenuButton<_Sort>(
+                  initialValue: _sort,
+                  onSelected: (v) => setState(() => _sort = v),
+                  tooltip: 'Sort',
+                  itemBuilder: (context) => [
+                    for (final v in _Sort.values)
+                      PopupMenuItem(value: v, child: Text(_sortLabel(v))),
+                  ],
+                  child: Chip(
+                    avatar: const Icon(Icons.sort, size: 18),
+                    label: Text(_sortLabel(_sort)),
+                  ),
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            '${recipes.length} of ${state.recipes.length} shown',
-            style: theme.textTheme.bodySmall,
-          ),
-          const SizedBox(height: 8),
+              ],
+            ),
+            Gap.vSm,
+            Text(
+              '${recipes.length} of ${state.recipes.length} shown',
+              style: theme.textTheme.bodySmall,
+            ),
+            Gap.vSm,
+          ],
           Expanded(
-            child: recipes.isEmpty
-                ? Center(
-                    child: Text(
-                      state.recipes.isEmpty
-                          ? 'No recipes yet.\nCreate one, or save a mix from '
-                                'the Mix tab.'
-                          : 'Nothing matches that search.',
-                      textAlign: TextAlign.center,
-                    ),
+            child: noneAtAll
+                ? EmptyState(
+                    icon: Icons.menu_book_outlined,
+                    title: 'No recipes yet',
+                    message:
+                        'Paste one in from e-liquid-recipes.com or '
+                        'AllTheFlavors, or build one from scratch.',
+                    actionLabel: 'Import a recipe',
+                    onAction: _openImport,
+                  )
+                : recipes.isEmpty
+                ? EmptyState(
+                    icon: Icons.search_off,
+                    title: 'Nothing matches',
+                    message:
+                        'No recipe name, note or flavor contains '
+                        '"${_search.text.trim()}".',
+                    actionLabel: 'Clear search',
+                    onAction: () => setState(_search.clear),
                   )
                 : ListView.builder(
                     itemCount: recipes.length,
@@ -206,7 +205,7 @@ class _RecipesPageState extends State<RecipesPage> {
       child: InkWell(
         onTap: () => _openDetail(r),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 12, 8, 8),
+          padding: const EdgeInsets.fromLTRB(Gap.md, Gap.md, Gap.sm, Gap.sm),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -221,14 +220,14 @@ class _RecipesPageState extends State<RecipesPage> {
                   ),
                   if (avgRating != null)
                     Padding(
-                      padding: const EdgeInsets.only(right: 8),
+                      padding: const EdgeInsets.only(right: Gap.sm),
                       child: StarSummary(average: avgRating, count: ratedCount),
                     ),
                   Text(
                     '${r.batchMl.toStringAsFixed(0)} mL  •  '
                     '${r.targetNic.toStringAsFixed(1)} mg  •  '
-                    '${r.targetVgPercent.toStringAsFixed(0)}% VG  •  '
-                    '${r.totalFlavorPercent.toStringAsFixed(1)}% flavor',
+                    '${r.baseMode == BaseMode.maxVg ? 'max VG' : '${r.targetVgPercent.toStringAsFixed(0)}% VG'}'
+                    '  •  ${r.totalFlavorPercent.toStringAsFixed(1)}% flavor',
                     style: theme.textTheme.bodySmall,
                   ),
                   PopupMenuButton<String>(
@@ -243,8 +242,8 @@ class _RecipesPageState extends State<RecipesPage> {
                           _confirmDelete(r);
                       }
                     },
-                    itemBuilder: (context) => [
-                      const PopupMenuItem(
+                    itemBuilder: (context) => const [
+                      PopupMenuItem(
                         value: 'edit',
                         child: ListTile(
                           dense: true,
@@ -253,7 +252,7 @@ class _RecipesPageState extends State<RecipesPage> {
                           title: Text('Edit'),
                         ),
                       ),
-                      const PopupMenuItem(
+                      PopupMenuItem(
                         value: 'duplicate',
                         child: ListTile(
                           dense: true,
@@ -262,7 +261,7 @@ class _RecipesPageState extends State<RecipesPage> {
                           title: Text('Duplicate'),
                         ),
                       ),
-                      const PopupMenuItem(
+                      PopupMenuItem(
                         value: 'delete',
                         child: ListTile(
                           dense: true,
@@ -277,7 +276,7 @@ class _RecipesPageState extends State<RecipesPage> {
               ),
               if (mixCount > 0)
                 Padding(
-                  padding: const EdgeInsets.only(bottom: 4),
+                  padding: const EdgeInsets.only(bottom: Gap.xs),
                   child: Text(
                     'Mixed $mixCount time${mixCount == 1 ? '' : 's'}'
                     '${lastMixed != null ? ' • last ${_ago(lastMixed)}' : ''}',
@@ -288,7 +287,7 @@ class _RecipesPageState extends State<RecipesPage> {
                 ),
               if (r.notes.isNotEmpty)
                 Padding(
-                  padding: const EdgeInsets.only(bottom: 6, right: 8),
+                  padding: const EdgeInsets.only(bottom: Gap.xs, right: Gap.sm),
                   child: Text(r.notes, style: theme.textTheme.bodySmall),
                 ),
               for (final f in r.flavors)
@@ -310,17 +309,17 @@ class _RecipesPageState extends State<RecipesPage> {
                 ),
               if (missing > 0)
                 Padding(
-                  padding: const EdgeInsets.only(top: 6),
+                  padding: const EdgeInsets.only(top: Gap.xs),
                   child: Text(
                     '$missing flavor(s) missing — they will be skipped when '
                     'loaded.',
                     style: TextStyle(color: theme.colorScheme.error),
                   ),
                 ),
-              const SizedBox(height: 8),
+              Gap.vSm,
               Wrap(
-                spacing: 8,
-                runSpacing: 8,
+                spacing: Gap.sm,
+                runSpacing: Gap.sm,
                 children: [
                   FilledButton.tonalIcon(
                     onPressed: () {
@@ -349,6 +348,20 @@ class _RecipesPageState extends State<RecipesPage> {
     );
   }
 
+  void _openDetail(Recipe r) => Navigator.of(context).push(
+    MaterialPageRoute<void>(
+      builder: (_) =>
+          RecipeDetailPage(state: state, recipeId: r.id, onMix: widget.onMix),
+    ),
+  );
+
+  Future<void> _openImport() async {
+    final r = await Navigator.of(context).push<Recipe>(
+      MaterialPageRoute(builder: (_) => ImportRecipePage(state: state)),
+    );
+    if (r != null && mounted) setState(() {});
+  }
+
   Future<void> _openEditor(Recipe? existing) async {
     final saved = await Navigator.of(context).push<Recipe>(
       MaterialPageRoute(
@@ -356,39 +369,46 @@ class _RecipesPageState extends State<RecipesPage> {
       ),
     );
     if (saved == null || !mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          existing == null
-              ? 'Created "${saved.name}".'
-              : 'Saved "${saved.name}".',
+    ScaffoldMessenger.of(context)
+      ..removeCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(
+            existing == null
+                ? 'Created "${saved.name}".'
+                : 'Saved "${saved.name}".',
+          ),
         ),
-      ),
-    );
+      );
   }
 
   void _duplicate(Recipe r) {
     final copy = state.duplicateRecipe(r.id);
     if (copy == null || !mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Duplicated as "${copy.name}".'),
-        action: SnackBarAction(
-          label: 'Edit',
-          onPressed: () => _openEditor(copy),
+    ScaffoldMessenger.of(context)
+      ..removeCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text('Duplicated as "${copy.name}".'),
+          action: SnackBarAction(
+            label: 'Edit',
+            onPressed: () => _openEditor(copy),
+          ),
         ),
-      ),
-    );
+      );
   }
 
   Future<void> _confirmDelete(Recipe r) async {
+    final mixes = state.mixCountForRecipe(r.id);
     final ok = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: Text('Delete "${r.name}"?'),
         content: Text(
-          '${r.flavors.length} flavor(s). Your inventory and mix history '
-          'are not affected.',
+          '${r.flavors.length} flavor(s).'
+          '${mixes > 0 ? ' $mixes logged mix(es) will lose their link to it, '
+                    'but stay in your history.' : ''}'
+          ' Your inventory is not affected.',
         ),
         actions: [
           TextButton(
@@ -409,15 +429,17 @@ class _RecipesPageState extends State<RecipesPage> {
 
     final removed = state.removeRecipe(r.id);
     if (removed == null || !mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        duration: const Duration(seconds: 8),
-        content: Text('Deleted "${removed.$1.name}".'),
-        action: SnackBarAction(
-          label: 'Undo',
-          onPressed: () => state.restoreRecipe(removed.$1, removed.$2),
+    ScaffoldMessenger.of(context)
+      ..removeCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          duration: toastUndo,
+          content: Text('Deleted "${removed.$1.name}".'),
+          action: SnackBarAction(
+            label: 'Undo',
+            onPressed: () => state.restoreRecipe(removed.$1, removed.$2),
+          ),
         ),
-      ),
-    );
+      );
   }
 }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models.dart';
 import '../state.dart';
+import '../theme.dart';
 import '../widgets/ingredient_picker.dart';
 import '../widgets/toast.dart';
 import 'recipe_editor_page.dart';
@@ -171,19 +172,19 @@ class _CalculatorPageState extends State<CalculatorPage> {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final wide = constraints.maxWidth > 980;
+        final wide = Breaks.isWide(constraints.maxWidth);
         return SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(Gap.lg),
           child: wide
               ? Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Expanded(child: inputs),
-                    const SizedBox(width: 16),
+                    Gap.hLg,
                     Expanded(child: output),
                   ],
                 )
-              : Column(children: [inputs, const SizedBox(height: 16), output]),
+              : Column(children: [inputs, Gap.vLg, output]),
         );
       },
     );

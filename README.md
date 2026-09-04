@@ -49,7 +49,7 @@ Rough positioning first:
 | Batch volume preserved when concentrates overrun the ratio | Yes | No | Varies | Varies | Varies |
 | Percent by weight instead of volume | Yes | No | Yes | No | Yes |
 | Max-VG mode | Yes | Yes | Yes | Yes | Yes |
-| Nicotine salts and mg/g bases | No | No | Yes | Partial | Yes |
+| Nicotine salts and mg/g bases | Yes | No | Yes | Partial | Yes |
 | Additives excluded from flavor percentage | Yes | No | Yes | Yes | No |
 
 ### At the scale

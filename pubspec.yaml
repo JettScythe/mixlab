@@ -2,7 +2,7 @@ name: mixlab
 description: "Weight-first e-liquid calculator with inventory, cost tracking, and a guided weigh-along mode."
 publish_to: 'none'
 
-version: 0.2.0-beta.2+5
+version: 0.2.0-beta.3+6
 
 environment:
   sdk: ^3.13.2

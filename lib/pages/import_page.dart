@@ -4,6 +4,8 @@ import 'package:flutter/services.dart';
 import '../models.dart';
 import '../recipe_import.dart';
 import '../state.dart';
+import '../theme.dart';
+
 import '../widgets/ingredient_picker.dart';
 import '../widgets/toast.dart';
 
@@ -201,23 +203,21 @@ class _ImportRecipePageState extends State<ImportRecipePage> {
       ),
       body: LayoutBuilder(
         builder: (context, c) {
-          final wide = c.maxWidth > 940;
+          final wide = Breaks.isWide(c.maxWidth);
           final input = _inputCard(theme);
           final preview = _previewCard(theme);
           return SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(Gap.lg),
             child: wide
                 ? Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Expanded(flex: 2, child: input),
-                      const SizedBox(width: 16),
+                      Gap.hLg,
                       Expanded(flex: 3, child: preview),
                     ],
                   )
-                : Column(
-                    children: [input, const SizedBox(height: 16), preview],
-                  ),
+                : Column(children: [input, Gap.vLg, preview]),
           );
         },
       ),
@@ -226,7 +226,7 @@ class _ImportRecipePageState extends State<ImportRecipePage> {
 
   Widget _inputCard(ThemeData theme) => Card(
     child: Padding(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(Gap.lg),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -376,7 +376,7 @@ class _ImportRecipePageState extends State<ImportRecipePage> {
 
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(Gap.lg),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [

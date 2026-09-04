@@ -1,6 +1,6 @@
 # Roadmap
 
-Current release: `v0.1.0-beta.3` — schema v4, desktop only (macOS,
+Current release: desktop only (macOS,
 Windows, Linux), unsigned builds.
 
 This is a personal project shipped in the open. Priorities reflect what
@@ -34,7 +34,7 @@ DIY, not all of it.
 - [x] **Additive and thinner ingredient kinds.** Sucralose, WS-23, EM
       and distilled water behave like flavors but should not count
       toward the flavor percentage.
-- [ ] **Nicotine salts and mg/g bases.** Requires a strength-unit field
+- [x] **Nicotine salts and mg/g bases.** Requires a strength-unit field
       on `Ingredient` and a branch in the nicotine volume calculation.
 - [ ] **Multiple nicotine bases in one mix**, for blending strengths.
 
@@ -138,9 +138,9 @@ Not user-visible, but each one prevents a class of future bug.
       a recipe does not require abandoning it for the Inventory tab.
 - [ ] **Keyboard navigation** in the picker — arrow keys through
       results, not just type-and-Enter.
-- [ ] **`intl` currency formatting.** Currently an ISO code appended
+- [x] **`intl` currency formatting.** Currently an ISO code appended
       after the number, which is wrong for most locales.
-- [ ] **Theme toggle** and persisted window size and position.
+- [x] **Theme toggle** and persisted window size and position.
 - [ ] **Consistent breakpoints.** Navigation switches at 700px, the
       calculator at 980px, the editor at 900px. 700–980 wastes space.
 - [ ] **Accessibility pass.** Semantics labels, tap target sizes,

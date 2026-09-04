@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models.dart';
 import '../state.dart';
+import '../theme.dart';
 import '../widgets/star_rating.dart';
 import 'recipe_editor_page.dart';
 
@@ -98,13 +99,13 @@ class RecipeDetailPage extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _summary(context, r, mixes, avg, rated.length, spend, volume),
-              const SizedBox(height: 16),
+              Gap.vLg,
               _composition(context, r),
             ],
           );
           final right = _timeline(context, mixes, set);
           return SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(Gap.lg),
             child: wide
                 ? Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -114,7 +115,7 @@ class RecipeDetailPage extends StatelessWidget {
                       Expanded(flex: 3, child: right),
                     ],
                   )
-                : Column(children: [left, const SizedBox(height: 16), right]),
+                : Column(children: [left, Gap.vLg, right]),
           );
         },
       ),
@@ -136,7 +137,7 @@ class RecipeDetailPage extends StatelessWidget {
 
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(Gap.lg),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -220,12 +221,12 @@ class RecipeDetailPage extends StatelessWidget {
 
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(Gap.lg),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text('Flavors', style: theme.textTheme.titleLarge),
-            const SizedBox(height: 8),
+            Gap.vSm,
             if (r.flavors.isEmpty)
               Text(
                 'No flavors — this is just base.',
@@ -314,7 +315,7 @@ class RecipeDetailPage extends StatelessWidget {
 
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(Gap.lg),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -327,7 +328,7 @@ class RecipeDetailPage extends StatelessWidget {
                         'History tab.',
               style: theme.textTheme.bodySmall,
             ),
-            const SizedBox(height: 12),
+            Gap.vMd,
             if (mixes.isEmpty)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 24),
@@ -353,7 +354,7 @@ class RecipeDetailPage extends StatelessWidget {
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(Gap.md),
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(8),
@@ -369,7 +370,7 @@ class RecipeDetailPage extends StatelessWidget {
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              const SizedBox(width: 8),
+              Gap.hSm,
               Text(
                 ago(l.mixedAt),
                 style: theme.textTheme.bodySmall?.copyWith(
@@ -421,7 +422,7 @@ class RecipeDetailPage extends StatelessWidget {
                 ),
               ),
             ),
-          const SizedBox(height: 8),
+          Gap.vSm,
           Align(
             alignment: Alignment.centerLeft,
             child: OutlinedButton.icon(

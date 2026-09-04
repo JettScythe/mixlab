@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 
 import '../models.dart';
 import '../state.dart';
+import '../theme.dart';
 import '../widgets/toast.dart';
 
 /// Platforms where file_selector implements a native save panel.
@@ -153,7 +154,7 @@ class _SettingsPageState extends State<SettingsPage> {
     ].any(_bad);
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(Gap.lg),
       child: Column(
         children: [
           _card('Appearance', [
@@ -174,7 +175,7 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ),
           ]),
-          const SizedBox(height: 16),
+          Gap.vLg,
           _card('Densities', [
             Text(
               'Used when an ingredient has no measured density of its own. '
@@ -184,7 +185,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 color: theme.colorScheme.outline,
               ),
             ),
-            const SizedBox(height: 12),
+            Gap.vMd,
             _field(pg, 'PG density (g/mL)'),
             _field(vg, 'VG density (g/mL)'),
             _field(
@@ -198,7 +199,7 @@ class _SettingsPageState extends State<SettingsPage> {
               helper: 'Distilled water ~1.0, PGA ~0.95.',
             ),
           ]),
-          const SizedBox(height: 16),
+          Gap.vLg,
 
           _card('Mixing defaults', [
             _field(
@@ -210,7 +211,7 @@ class _SettingsPageState extends State<SettingsPage> {
             _field(defBatch, 'Default batch size (mL)'),
             _field(refBottle, 'Reference bottle for cost readout (mL)'),
             _field(lowStock, 'Low stock warning below (mL)'),
-            const SizedBox(height: 8),
+            Gap.vSm,
             Text(
               'Default percentage mode for new recipes',
               style: theme.textTheme.titleSmall,
@@ -234,7 +235,7 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ),
           ]),
-          const SizedBox(height: 16),
+          Gap.vLg,
 
           _card('Scale', [
             Text(
@@ -244,7 +245,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 color: theme.colorScheme.outline,
               ),
             ),
-            const SizedBox(height: 12),
+            Gap.vMd,
             Align(
               alignment: Alignment.centerLeft,
               child: SegmentedButton<double>(
@@ -268,7 +269,7 @@ class _SettingsPageState extends State<SettingsPage> {
               onChanged: (v) => setState(() => tareEach = v),
             ),
           ]),
-          const SizedBox(height: 16),
+          Gap.vLg,
 
           FilledButton.icon(
             onPressed: anyBad ? null : _saveSettings,
@@ -283,10 +284,10 @@ class _SettingsPageState extends State<SettingsPage> {
               'settings as one JSON file. Import merges by id, so '
               're-importing the same file is safe.',
             ),
-            const SizedBox(height: 12),
+            Gap.vMd,
             Wrap(
-              spacing: 8,
-              runSpacing: 8,
+              spacing: Gap.sm,
+              runSpacing: Gap.sm,
               children: [
                 FilledButton.tonalIcon(
                   onPressed: _export,
@@ -317,7 +318,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
               ],
             ),
-            const SizedBox(height: 8),
+            Gap.vSm,
             Text(
               'Schema v${AppState.currentSchema}  •  '
               '${s.ingredients.length} ingredients, '
@@ -327,7 +328,7 @@ class _SettingsPageState extends State<SettingsPage> {
               style: theme.textTheme.bodySmall,
             ),
           ]),
-          const SizedBox(height: 16),
+          Gap.vLg,
 
           _card('Danger zone', [
             OutlinedButton.icon(
@@ -370,12 +371,12 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Widget _card(String title, List<Widget> children) => Card(
     child: Padding(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(Gap.lg),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(title, style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 12),
+          Gap.vMd,
           ...children,
         ],
       ),

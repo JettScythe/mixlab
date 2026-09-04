@@ -2,12 +2,16 @@ import 'package:flutter/material.dart';
 
 import '../models.dart';
 import '../state.dart';
+import '../theme.dart';
+import '../widgets/empty_state.dart';
 import '../widgets/ingredient_dialog.dart';
 import '../widgets/ingredient_picker.dart';
+import '../widgets/toast.dart';
 
 class InventoryPage extends StatefulWidget {
   const InventoryPage({super.key, required this.state});
   final AppState state;
+
   @override
   State<InventoryPage> createState() => _InventoryPageState();
 }
@@ -27,7 +31,10 @@ class _InventoryPageState extends State<InventoryPage> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final set = state.settings;
+    final noneAtAll = state.ingredients.isEmpty;
+
     var items = searchIngredients(state.ingredients, _search.text);
     if (_search.text.trim().isEmpty) {
       items.sort((a, b) {
@@ -45,22 +52,21 @@ class _InventoryPageState extends State<InventoryPage> {
     }
     final brands = state.brands;
     final suspect = state.suspectDensities;
+    final filtered = _brand != null || _lowOnly || _search.text.isNotEmpty;
 
     return Padding(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(Gap.lg),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Row(
             children: [
               Expanded(
-                child: Text(
-                  'Inventory',
-                  style: Theme.of(context).textTheme.headlineSmall,
-                ),
+                child: Text('Inventory', style: theme.textTheme.headlineSmall),
               ),
-              Text('Stock value: ${money(state.stockValue, set)}'),
-              const SizedBox(width: 12),
+              if (!noneAtAll)
+                Text('Stock value: ${money(state.stockValue, set)}'),
+              Gap.hMd,
               FilledButton.icon(
                 onPressed: () => _edit(null),
                 icon: const Icon(Icons.add),
@@ -69,74 +75,98 @@ class _InventoryPageState extends State<InventoryPage> {
             ],
           ),
           if (suspect.isNotEmpty) _densityBanner(suspect),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _search,
-                  onChanged: (_) => setState(() {}),
-                  decoration: InputDecoration(
-                    isDense: true,
-                    prefixIcon: const Icon(Icons.search),
-                    hintText: 'Search brand or name (try "cap custard")',
-                    border: const OutlineInputBorder(),
-                    suffixIcon: _search.text.isEmpty
-                        ? null
-                        : IconButton(
-                            icon: const Icon(Icons.clear),
-                            onPressed: () => setState(_search.clear),
-                          ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              FilterChip(
-                label: const Text('Low stock'),
-                selected: _lowOnly,
-                onSelected: (v) => setState(() => _lowOnly = v),
-              ),
-            ],
-          ),
-          if (brands.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            SizedBox(
-              height: 40,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.only(right: 6),
-                    child: FilterChip(
-                      label: const Text('All brands'),
-                      selected: _brand == null,
-                      onSelected: (_) => setState(() => _brand = null),
+          if (!noneAtAll) ...[
+            Gap.vMd,
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _search,
+                    onChanged: (_) => setState(() {}),
+                    decoration: InputDecoration(
+                      prefixIcon: const Icon(Icons.search),
+                      hintText: 'Search brand or name (try "cap custard")',
+                      suffixIcon: _search.text.isEmpty
+                          ? null
+                          : IconButton(
+                              icon: const Icon(Icons.clear),
+                              onPressed: () => setState(_search.clear),
+                            ),
                     ),
                   ),
-                  for (final b in brands)
+                ),
+                Gap.hMd,
+                FilterChip(
+                  label: const Text('Low stock'),
+                  selected: _lowOnly,
+                  onSelected: (v) => setState(() => _lowOnly = v),
+                ),
+              ],
+            ),
+            if (brands.isNotEmpty) ...[
+              Gap.vSm,
+              SizedBox(
+                height: 40,
+                child: ListView(
+                  scrollDirection: Axis.horizontal,
+                  children: [
                     Padding(
                       padding: const EdgeInsets.only(right: 6),
                       child: FilterChip(
-                        label: Text(b),
-                        tooltip: knownBrands[b],
-                        selected: _brand == b,
-                        onSelected: (v) =>
-                            setState(() => _brand = v ? b : null),
+                        label: const Text('All brands'),
+                        selected: _brand == null,
+                        onSelected: (_) => setState(() => _brand = null),
                       ),
                     ),
-                ],
+                    for (final b in brands)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 6),
+                        child: FilterChip(
+                          label: Text(b),
+                          tooltip: knownBrands[b],
+                          selected: _brand == b,
+                          onSelected: (v) =>
+                              setState(() => _brand = v ? b : null),
+                        ),
+                      ),
+                  ],
+                ),
               ),
+            ],
+            Gap.vMd,
+            Text(
+              '${items.length} of ${state.ingredients.length} shown',
+              style: theme.textTheme.bodySmall,
             ),
+            Gap.vXs,
           ],
-          const SizedBox(height: 12),
-          Text(
-            '${items.length} of ${state.ingredients.length} shown',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-          const SizedBox(height: 4),
           Expanded(
-            child: items.isEmpty
-                ? const Center(child: Text('Nothing matches.'))
+            child: noneAtAll
+                ? EmptyState(
+                    icon: Icons.inventory_2_outlined,
+                    title: 'Nothing in your stash',
+                    message:
+                        'Add your PG, VG, nicotine base and flavors here. '
+                        'Bottle size and price make cost-per-bottle work.',
+                    actionLabel: 'Add ingredient',
+                    onAction: () => _edit(null),
+                  )
+                : items.isEmpty
+                ? EmptyState(
+                    icon: Icons.search_off,
+                    title: 'Nothing matches',
+                    message: filtered
+                        ? 'Try clearing the search or filters.'
+                        : null,
+                    actionLabel: filtered ? 'Clear filters' : 'Add ingredient',
+                    onAction: filtered
+                        ? () => setState(() {
+                            _search.clear();
+                            _lowOnly = false;
+                            _brand = null;
+                          })
+                        : () => _edit(null),
+                  )
                 : ListView.builder(
                     itemCount: items.length,
                     itemBuilder: (context, i) => _tile(items[i]),
@@ -150,8 +180,8 @@ class _InventoryPageState extends State<InventoryPage> {
   Widget _densityBanner(List<Ingredient> suspect) {
     final theme = Theme.of(context);
     return Container(
-      margin: const EdgeInsets.only(top: 12),
-      padding: const EdgeInsets.all(12),
+      margin: const EdgeInsets.only(top: Gap.md),
+      padding: const EdgeInsets.all(Gap.md),
       decoration: BoxDecoration(
         color: theme.colorScheme.tertiaryContainer,
         borderRadius: BorderRadius.circular(8),
@@ -162,7 +192,7 @@ class _InventoryPageState extends State<InventoryPage> {
             Icons.info_outline,
             color: theme.colorScheme.onTertiaryContainer,
           ),
-          const SizedBox(width: 8),
+          Gap.hSm,
           Expanded(
             child: Text(
               '${suspect.length} ingredient(s) have a density that does not '
@@ -185,9 +215,9 @@ class _InventoryPageState extends State<InventoryPage> {
       builder: (context) => AlertDialog(
         title: const Text('Recalculate densities?'),
         content: Text(
-          'Sets density from each ingredient\'s kind and carrier '
-          'VG% for ${suspect.length} item(s). Measured values you entered '
-          'by hand will be overwritten.',
+          "Sets density from each ingredient's kind and carrier VG% for "
+          '${suspect.length} item(s). Measured values you entered by hand '
+          'will be overwritten.',
         ),
         actions: [
           TextButton(
@@ -212,6 +242,7 @@ class _InventoryPageState extends State<InventoryPage> {
     final set = state.settings;
     final low = e.stockMl <= set.lowStockMl;
     final theme = Theme.of(context);
+
     return Card(
       child: ListTile(
         leading: e.brand.isEmpty
@@ -245,22 +276,30 @@ class _InventoryPageState extends State<InventoryPage> {
                   ),
                 ),
               ),
+            if (e.nicIsSalt)
+              const Padding(
+                padding: EdgeInsets.only(left: 6),
+                child: Tooltip(
+                  message: 'Nicotine salt',
+                  child: Icon(Icons.grain, size: 15),
+                ),
+              ),
           ],
         ),
         subtitle: Text(
           '${kindLabel(e.kind)} • '
           '${e.stockMl.toStringAsFixed(1)} mL '
           '(${e.stockGrams.toStringAsFixed(1)} g) on hand • '
-          '${e.costPerMl.toStringAsFixed(3)} ${set.currency}/mL'
+          '${moneyPerMl(e.costPerMl, set)}'
           '${e.avgCostPerMl > 0 ? ' (avg)' : ''}'
-          '${e.kind == IngredientKind.nicotine ? ' • ${e.nicStrength.toStringAsFixed(0)} mg/mL' : ''}',
+          '${e.kind == IngredientKind.nicotine ? ' • ${e.nicStrength.toStringAsFixed(0)} ${nicUnitLabel(e.nicUnit)}' : ''}',
         ),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             if (low)
               Padding(
-                padding: const EdgeInsets.only(right: 4),
+                padding: const EdgeInsets.only(right: Gap.xs),
                 child: Icon(
                   Icons.error_outline,
                   size: 18,
@@ -292,17 +331,13 @@ class _InventoryPageState extends State<InventoryPage> {
       builder: (context) => _RestockDialog(state: state, ingredient: e),
     );
     if (p == null || !mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        duration: const Duration(seconds: 8),
-        content: Text(
-          'Added ${p.volumeMl.toStringAsFixed(0)} mL of '
-          '${p.ingredientName} for ${money(p.cost, state.settings)}.',
-        ),
-        action: SnackBarAction(
-          label: 'Undo',
-          onPressed: () => state.undoPurchase(p.id),
-        ),
+    showToast(
+      context,
+      'Added ${p.volumeMl.toStringAsFixed(0)} mL of ${p.ingredientName} '
+      'for ${money(p.cost, state.settings)}.',
+      action: SnackBarAction(
+        label: 'Undo',
+        onPressed: () => state.undoPurchase(p.id),
       ),
     );
   }
@@ -326,21 +361,21 @@ class _InventoryPageState extends State<InventoryPage> {
                 '${money(e.stockMl * e.costPerMl, state.settings)}.',
               ),
             if (usedBy.isNotEmpty) ...[
-              const SizedBox(height: 8),
+              Gap.vSm,
               Text(
                 'Used by ${usedBy.length} recipe(s):',
                 style: TextStyle(color: theme.colorScheme.error),
               ),
               for (final r in usedBy.take(6)) Text('  • ${r.name}'),
               if (usedBy.length > 6) Text('  • …and ${usedBy.length - 6} more'),
-              const SizedBox(height: 4),
+              Gap.vXs,
               const Text('Those recipes will show it as missing.'),
             ],
             if (mixes > 0) ...[
-              const SizedBox(height: 8),
+              Gap.vSm,
               Text(
-                '$mixes logged mix(es) reference it; undoing those will '
-                'no longer restore its stock.',
+                '$mixes logged mix(es) reference it; undoing those will no '
+                'longer restore its stock.',
               ),
             ],
           ],
@@ -364,14 +399,12 @@ class _InventoryPageState extends State<InventoryPage> {
 
     final removed = state.removeIngredient(e.id);
     if (removed == null || !mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        duration: const Duration(seconds: 8),
-        content: Text('Deleted ${removed.$1.displayName}.'),
-        action: SnackBarAction(
-          label: 'Undo',
-          onPressed: () => state.restoreIngredient(removed.$1, removed.$2),
-        ),
+    showToast(
+      context,
+      'Deleted ${removed.$1.displayName}.',
+      action: SnackBarAction(
+        label: 'Undo',
+        onPressed: () => state.restoreIngredient(removed.$1, removed.$2),
       ),
     );
   }
@@ -390,6 +423,7 @@ class _RestockDialog extends StatefulWidget {
   const _RestockDialog({required this.state, required this.ingredient});
   final AppState state;
   final Ingredient ingredient;
+
   @override
   State<_RestockDialog> createState() => _RestockDialogState();
 }
@@ -451,14 +485,13 @@ class _RestockDialogState extends State<_RestockDialog> {
                     onChanged: (_) => setState(() {}),
                     decoration: InputDecoration(
                       labelText: 'Volume added (mL)',
-                      border: const OutlineInputBorder(),
                       errorText: vol.text.trim().isNotEmpty && v == null
                           ? 'Number?'
                           : null,
                     ),
                   ),
                 ),
-                const SizedBox(width: 8),
+                Gap.hSm,
                 Expanded(
                   child: TextField(
                     controller: cost,
@@ -468,7 +501,6 @@ class _RestockDialogState extends State<_RestockDialog> {
                     onChanged: (_) => setState(() {}),
                     decoration: InputDecoration(
                       labelText: 'Price paid (${set.currency})',
-                      border: const OutlineInputBorder(),
                       errorText: cost.text.trim().isNotEmpty && c == null
                           ? 'Number?'
                           : null,
@@ -477,13 +509,13 @@ class _RestockDialogState extends State<_RestockDialog> {
                 ),
               ],
             ),
-            const SizedBox(height: 12),
+            Gap.vMd,
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('Blend with existing stock'),
               subtitle: const Text(
-                'Weighted average cost basis. Off: this '
-                'purchase price replaces the basis.',
+                'Weighted average cost basis. Off: this purchase price '
+                'replaces the basis.',
               ),
               value: weighted,
               onChanged: (x) => setState(() => weighted = x),
@@ -496,8 +528,8 @@ class _RestockDialogState extends State<_RestockDialog> {
             ),
             _row(
               'Cost basis',
-              '${e.costPerMl.toStringAsFixed(3)} ${set.currency}/mL',
-              '${resultBasis.toStringAsFixed(3)} ${set.currency}/mL',
+              moneyPerMl(e.costPerMl, set),
+              moneyPerMl(resultBasis, set),
             ),
           ],
         ),
@@ -530,7 +562,7 @@ class _RestockDialogState extends State<_RestockDialog> {
     child: Row(
       children: [
         Expanded(child: Text(label)),
-        Text(before, style: const TextStyle(color: Colors.grey)),
+        Text(before, style: TextStyle(color: Theme.of(context).hintColor)),
         const Padding(
           padding: EdgeInsets.symmetric(horizontal: 6),
           child: Icon(Icons.arrow_forward, size: 14),
