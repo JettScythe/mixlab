@@ -58,7 +58,11 @@ class Ingredient {
       '$brand $name ${knownBrands[brand] ?? ''}'.toLowerCase();
 
   /// Identity for duplicate detection: brand + name, case-insensitive.
-  String get dedupKey =>
+  String get dedupKey => dedupKeyFor(brand, name);
+
+  /// Same key, computed from loose strings. Used where no [Ingredient] has
+  /// been built yet — merging raw JSON, or checking a name before saving.
+  static String dedupKeyFor(String brand, String name) =>
       '${brand.trim().toLowerCase()}|${name.trim().toLowerCase()}';
 
   /// Weighted average basis from the ledger, else the bottle price.

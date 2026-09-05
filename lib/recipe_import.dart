@@ -1,5 +1,6 @@
 import 'package:mixlab/models/enums.dart';
 import 'package:mixlab/models/ingredient.dart';
+import 'package:mixlab/models/recipe.dart';
 import 'package:mixlab/models/units.dart';
 
 /// One parsed ingredient line from pasted recipe text.
@@ -354,6 +355,79 @@ ParsedRecipe parseRecipeText(String input) {
 
   return out;
 }
+
+/// Renders a recipe as the plain text people actually paste to each other.
+///
+/// The output is deliberately in the dialect [parseRecipeText] reads, so a
+/// recipe shared out of MixLab can be pasted straight back in — here or on
+/// someone else's install — without losing the batch size, nicotine or
+/// ratio. There is no MixLab-specific envelope: the point is that it drops
+/// into a forum post or a message unchanged.
+///
+/// Bases are named in a comment rather than as data. A base is a bottle in
+/// *this* inventory, so shipping its id would be meaningless elsewhere,
+/// but which base a recipe was built around is worth telling a human.
+String recipeToText(
+  Recipe r, {
+  String Function(String ingredientId)? nameOf,
+  String? nicBaseName,
+  String? pgName,
+  String? vgName,
+}) {
+  final out = StringBuffer();
+  final name = r.name.trim();
+  out.writeln(name.isEmpty ? 'Untitled recipe' : name);
+  out.writeln();
+
+  for (final f in r.flavors) {
+    final label = nameOf?.call(f.ingredientId) ?? f.name;
+    out.writeln('${_fmtPercent(f.percent)}% $label');
+  }
+  if (r.flavors.isEmpty) out.writeln('(no flavors — base only)');
+  out.writeln();
+
+  // The metadata line the parser consumes whole.
+  final bits = <String>[
+    '${_fmtNumber(r.batchMl)}ml',
+    if (r.baseMode == BaseMode.maxVg)
+      'Max VG'
+    else
+      '${_fmtNumber(r.targetVgPercent)}/'
+          '${_fmtNumber(100 - r.targetVgPercent)} VG/PG',
+    '${_fmtNumber(r.targetNic)}mg',
+  ];
+  out.writeln(bits.join(', '));
+
+  if (r.percentMode == PercentMode.byWeight) {
+    out.writeln('Percentages are by weight.');
+  }
+
+  final bases = <String>[
+    if (nicBaseName != null) 'nicotine $nicBaseName',
+    if (pgName != null) 'PG $pgName',
+    if (vgName != null) 'VG $vgName',
+  ];
+  if (bases.isNotEmpty) out.writeln('Mixed with: ${bases.join(', ')}.');
+
+  final notes = r.notes.trim();
+  if (notes.isNotEmpty) {
+    out.writeln();
+    out.writeln(notes);
+  }
+
+  return out.toString().trimRight();
+}
+
+/// Percentages keep two decimals at most, and drop a trailing '.0'.
+String _fmtPercent(double v) {
+  final r = roundPercent(v);
+  return r == r.roundToDouble()
+      ? r.toStringAsFixed(0)
+      : r.toString().replaceFirst(RegExp(r'0+$'), '');
+}
+
+String _fmtNumber(double v) =>
+    v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toString();
 
 String _normalize(String s) =>
     s.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');

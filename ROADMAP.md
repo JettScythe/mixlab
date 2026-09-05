@@ -7,8 +7,10 @@ This is a personal project shipped in the open. Priorities reflect what
 is actually annoying while mixing, not what would look impressive. Items
 move up when real use proves they matter.
 
-Completed milestones are removed rather than accumulating as checked
-boxes. See [Releases](../../releases) for what actually shipped when.
+Completed milestones are removed once their release ships, rather than
+accumulating as checked boxes forever. Items checked off here are done on
+`main` but not yet in a tagged build. See [Releases](../../releases) for
+what actually shipped when.
 
 ## Principles
 
@@ -27,15 +29,20 @@ boxes. See [Releases](../../releases) for what actually shipped when.
 The biggest reach item. MixLab has no recipe community and does not need
 one, but it should interoperate with the places that do.
 
-- [ ] **FIFO cost basis** as an alternative to weighted average.
+- [x] **Paste import** from e-liquid-recipes.com, AllTheFlavors,
+      spreadsheet columns and forum posts. Vendor shorthands are
+      normalised, unmatched lines are shown rather than dropped.
+- [x] **FIFO cost basis** as an alternative to moving average, selectable
+      in Settings and applied retroactively to the whole ledger.
+- [x] **Single-recipe export** as shareable plain text, in the same
+      dialect the paste importer reads.
+- [x] **Recipe stores its bases.** A recipe can name the nicotine, PG and
+      VG bottles it is mixed from instead of silently using whatever is
+      selected. Leaving them unset keeps the old behaviour.
 - [ ] **URL import** for the same sites, if the paste parser proves out.
-- [ ] **Single-recipe export** as shareable plain text.
 - [ ] **CSV export** of inventory, recipes and mix history for
       spreadsheet users.
 - [ ] **Recipe tags and favorites**, once the library outgrows search.
-- [ ] **Recipe stores its bases.** Currently a recipe records target
-      nicotine and ratio but not *which* nic base or PG/VG source, so
-      loading one silently uses whatever is selected.
 
 ## v0.5 — Mobile
 
@@ -56,8 +63,10 @@ packaging.
 - [ ] **iOS export path.** `file_selector` has no save panel on iOS;
       the code falls back to clipboard. `share_plus` is the idiomatic
       fix.
-- [ ] **Backup transfer between devices.** Export on desktop, import on
-      phone. No sync is planned — that would mean a server.
+- [x] **Backup transfer between devices.** Export on one, review and merge
+      on the other. Records reconcile by id, then by brand and name;
+      deletions propagate via tombstones. Still no server, and no
+      background sync — you move the file yourself.
 - [ ] **Multiple nicotine bases in one mix.** Blending two strengths means
   `calculateMix` taking a list and solving a small system for the mix.
   Meaningful work for something most mixers never do — a single base
@@ -107,10 +116,14 @@ Not user-visible, but each one prevents a class of future bug.
 
 - [x] **Inline ingredient creation** from the flavor picker, so adding
       a recipe does not require abandoning it for the Inventory tab.
-- [ ] **Keyboard navigation** in the picker — arrow keys through
-      results, not just type-and-Enter.
-- [x] **`intl` currency formatting.** Currently an ISO code appended
-      after the number, which is wrong for most locales.
+- [x] **Keyboard navigation** in the picker — arrow keys through results,
+      Enter to take the highlighted one.
+- [x] **`intl` currency formatting.** Totals go through
+      `NumberFormat.simpleCurrency`, falling back to a plain suffix for
+      codes `intl` does not know.
+- [ ] **Per-mL and inline prices through `intl` too.** `moneyPerMl` and
+      several hand-built labels still append the ISO code after the
+      number, so the two styles sit side by side on the same screen.
 - [x] **Theme toggle** and persisted window size and position.
 - [ ] **Consistent breakpoints.** Navigation switches at 700px, the
       calculator at 980px, the editor at 900px. 700–980 wastes space.
@@ -134,14 +147,17 @@ Not user-visible, but each one prevents a class of future bug.
   a poor fit for an unbounded mix log; it may be dropped.
 - Windows and Linux builds are produced by CI but have not been run by a
   human on real hardware.
-- Importing another install's backup duplicates ingredients, because
-  merging is by id with no name-based deduplication.
+- Merging matches ingredients by id, then by brand and name. Two installs
+  that spell the same bottle differently — "TFA Strawberry Ripe" against
+  "TPA Strawberry (Ripe)" — still merge as two ingredients.
 
 ## Not planned
 
-- **Accounts, sync, or a hosted recipe database.** That means a server,
-  a privacy policy, and an ongoing cost. ELR and AllTheFlavors already
-  do this well; MixLab is the local tool you mix with.
+- **Accounts, a sync server, or a hosted recipe database.** That means a
+  server, a privacy policy, and an ongoing cost. Moving a backup between
+  your own devices is supported and always will be; nothing phones home
+  to do it. ELR and AllTheFlavors already do the community part well;
+  MixLab is the local tool you mix with.
 - **Telemetry of any kind.**
 - **Nicotine sourcing, vendor links, or purchasing.**
 

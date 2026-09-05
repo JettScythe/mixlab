@@ -34,6 +34,9 @@ class Recipe {
     this.targetVgPercent = 70,
     this.percentMode = PercentMode.byVolume,
     this.baseMode = BaseMode.ratio,
+    this.nicId,
+    this.pgId,
+    this.vgId,
     this.updatedAt,
     List<RecipeFlavor>? flavors,
   }) : flavors = flavors ?? [];
@@ -44,6 +47,18 @@ class Recipe {
   double batchMl;
   double targetNic;
   double targetVgPercent;
+
+  /// Which bottles this recipe is mixed from.
+  ///
+  /// A recipe recording 3 mg/mL says nothing about *which* base delivers
+  /// it, and the answer changes the mix: a 100 mg/mL VG base and a
+  /// 250 mg/mL PG base need different volumes and drag the ratio in
+  /// opposite directions. Null means "no preference" — the caller falls
+  /// back to whatever is selected, which is how every recipe behaved
+  /// before these existed.
+  String? nicId;
+  String? pgId;
+  String? vgId;
 
   /// Last modification, used for last-write-wins merging. Null means the
   /// record predates sync tracking.
@@ -73,6 +88,9 @@ class Recipe {
     'targetVgPercent': targetVgPercent,
     'percentMode': percentMode.index,
     'baseMode': baseMode.index,
+    'nicId': nicId,
+    'pgId': pgId,
+    'vgId': vgId,
     'flavors': flavors.map((f) => f.toJson()).toList(),
     'updatedAt': updatedAt?.toIso8601String(),
   };
@@ -91,6 +109,11 @@ class Recipe {
     ),
     updatedAt: DateTime.tryParse(j['updatedAt'] as String? ?? ''),
     baseMode: enumFromIndex(BaseMode.values, j['baseMode'], BaseMode.ratio),
+    // Absent on pre-v12 recipes, which is exactly the "no preference"
+    // case, so no migration is needed to read them.
+    nicId: j['nicId'] as String?,
+    pgId: j['pgId'] as String?,
+    vgId: j['vgId'] as String?,
     flavors: [
       for (final f in (j['flavors'] as List? ?? const []))
         RecipeFlavor.fromJson(f as Map<String, dynamic>),

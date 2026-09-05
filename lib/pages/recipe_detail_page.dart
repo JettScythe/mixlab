@@ -6,6 +6,7 @@ import 'package:mixlab/models/units.dart';
 
 import '../state.dart';
 import '../theme.dart';
+import '../widgets/recipe_text_dialog.dart';
 import '../widgets/star_rating.dart';
 import 'recipe_editor_page.dart';
 
@@ -72,6 +73,12 @@ class RecipeDetailPage extends StatelessWidget {
       appBar: AppBar(
         title: Text(r.name, overflow: TextOverflow.ellipsis),
         actions: [
+          IconButton(
+            tooltip: 'Share as text',
+            icon: const Icon(Icons.ios_share),
+            onPressed: () =>
+                showRecipeTextDialog(context, state: state, recipe: r),
+          ),
           IconButton(
             tooltip: 'Edit recipe',
             icon: const Icon(Icons.edit_outlined),

@@ -5,6 +5,7 @@ import 'package:mixlab/models/recipe.dart';
 import '../state.dart';
 import '../theme.dart';
 import '../widgets/empty_state.dart';
+import '../widgets/recipe_text_dialog.dart';
 import '../widgets/star_rating.dart';
 import '../widgets/toast.dart';
 import 'import_page.dart';
@@ -258,6 +259,12 @@ class _RecipesPageState extends State<RecipesPage> {
                           _openEditor(r);
                         case 'duplicate':
                           _duplicate(r);
+                        case 'share':
+                          showRecipeTextDialog(
+                            context,
+                            state: state,
+                            recipe: r,
+                          );
                         case 'delete':
                           _confirmDelete(r);
                       }
@@ -288,6 +295,15 @@ class _RecipesPageState extends State<RecipesPage> {
                           contentPadding: EdgeInsets.zero,
                           leading: Icon(Icons.copy_outlined),
                           title: Text('Duplicate'),
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'share',
+                        child: ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(Icons.ios_share),
+                          title: Text('Share as text'),
                         ),
                       ),
                       PopupMenuItem(
