@@ -85,6 +85,67 @@ String nicUnitHint(NicUnit u) => switch (u) {
         'density right or the whole mix is off.',
 };
 
+/// Record families that participate in sync.
+enum RecordType { ingredient, recipe, mixLog, purchase, adjustment }
+
+String recordTypeLabel(RecordType t) => switch (t) {
+  RecordType.ingredient => 'Ingredient',
+  RecordType.recipe => 'Recipe',
+  RecordType.mixLog => 'Mix',
+  RecordType.purchase => 'Restock',
+  RecordType.adjustment => 'Adjustment',
+};
+
+/// Marks a deleted record so a merge does not resurrect it.
+///
+/// Without these, syncing from a device that still has the record would
+/// silently bring it back, because "absent" and "deleted" are
+/// indistinguishable in a plain union.
+class Tombstone {
+  Tombstone({
+    required this.type,
+    required this.recordId,
+    required this.deletedAt,
+    this.label = '',
+  });
+
+  final RecordType type;
+  final String recordId;
+  final DateTime deletedAt;
+
+  /// Kept for the merge preview, so a deletion reads as something other
+  /// than an opaque id.
+  final String label;
+
+  String get key => '${type.index}:$recordId';
+
+  Map<String, dynamic> toJson() => {
+    'type': type.index,
+    'recordId': recordId,
+    'deletedAt': deletedAt.toIso8601String(),
+    'label': label,
+  };
+
+  factory Tombstone.fromJson(Map<String, dynamic> j) => Tombstone(
+    type:
+        RecordType.values[(j['type'] as num?)?.toInt().clamp(
+              0,
+              RecordType.values.length - 1,
+            ) ??
+            0],
+    recordId: j['recordId'] as String,
+    deletedAt:
+        DateTime.tryParse(j['deletedAt'] as String? ?? '') ??
+        DateTime.fromMillisecondsSinceEpoch(0),
+    label: j['label'] as String? ?? '',
+  );
+}
+
+/// Epoch used when a record predates sync tracking. Anything with a real
+/// timestamp beats it, so old records lose to edits rather than winning
+/// by accident.
+final beforeSync = DateTime.fromMillisecondsSinceEpoch(0);
+
 /// Brand shorthands seen in DIY recipes, mapped to full vendor names.
 /// Verify against e-liquid-recipes.com before trusting any of these.
 const knownBrands = <String, String>{
@@ -191,6 +252,7 @@ class Ingredient {
     this.nicIsSalt = false,
     this.carrierVg = 0, // 0..1 fraction of carrier that is VG
     this.notes = '',
+    this.updatedAt,
   });
 
   final String id;
@@ -200,6 +262,7 @@ class Ingredient {
   double density;
   double bottleSizeMl;
   double bottleCost;
+  DateTime? updatedAt;
 
   /// Weighted average from the stock ledger. Derived — see [stockMl].
   double avgCostPerMl;
@@ -245,6 +308,7 @@ class Ingredient {
     NicUnit.perMl => nicStrength,
     NicUnit.perGram => nicStrength * density,
   };
+  DateTime get syncStamp => updatedAt ?? beforeSync;
 
   /// True when [density] disagrees with what the carrier implies. Catches
   /// VG-based nicotine and concentrates left at the PG default.
@@ -268,6 +332,7 @@ class Ingredient {
     'nicIsSalt': nicIsSalt,
     'carrierVg': carrierVg,
     'notes': notes,
+    'updatedAt': updatedAt?.toIso8601String(),
   };
 
   factory Ingredient.fromJson(Map<String, dynamic> j) => Ingredient(
@@ -285,6 +350,7 @@ class Ingredient {
     nicIsSalt: j['nicIsSalt'] as bool? ?? false,
     carrierVg: (j['carrierVg'] as num?)?.toDouble() ?? 0,
     notes: j['notes'] as String? ?? '',
+    updatedAt: DateTime.tryParse(j['updatedAt'] as String? ?? ''),
   );
 }
 
@@ -309,6 +375,7 @@ class Settings {
     this.emptyBottleCost = 0,
     this.emptyBottleMl = 30,
     this.consumablesCost = 0,
+    this.updatedAt,
   });
 
   double pgDensity;
@@ -335,6 +402,12 @@ class Settings {
 
   /// Caps, labels, gloves — anything spent per batch regardless of size.
   double consumablesCost;
+
+  /// Last modification, used for last-write-wins merging. Null means the
+  /// record predates sync tracking.
+  DateTime? updatedAt;
+
+  DateTime get syncStamp => updatedAt ?? beforeSync;
 
   /// Density implied by kind alone. Prefer [densityForCarrier].
   double densityFor(IngredientKind k) => densityForCarrier(k, 0);
@@ -371,6 +444,7 @@ class Settings {
     'emptyBottleCost': emptyBottleCost,
     'emptyBottleMl': emptyBottleMl,
     'consumablesCost': consumablesCost,
+    'updatedAt': updatedAt?.toIso8601String(),
   };
 
   factory Settings.fromJson(Map<String, dynamic> j) => Settings(
@@ -392,6 +466,7 @@ class Settings {
     emptyBottleCost: (j['emptyBottleCost'] as num?)?.toDouble() ?? 0,
     emptyBottleMl: (j['emptyBottleMl'] as num?)?.toDouble() ?? 30,
     consumablesCost: (j['consumablesCost'] as num?)?.toDouble() ?? 0,
+    updatedAt: DateTime.tryParse(j['updatedAt'] as String? ?? ''),
   );
 }
 
@@ -429,6 +504,7 @@ class Recipe {
     this.targetVgPercent = 70,
     this.percentMode = PercentMode.byVolume,
     this.baseMode = BaseMode.ratio,
+    this.updatedAt,
     List<RecipeFlavor>? flavors,
   }) : flavors = flavors ?? [];
 
@@ -438,6 +514,12 @@ class Recipe {
   double batchMl;
   double targetNic;
   double targetVgPercent;
+
+  /// Last modification, used for last-write-wins merging. Null means the
+  /// record predates sync tracking.
+  DateTime? updatedAt;
+
+  DateTime get syncStamp => updatedAt ?? beforeSync;
 
   /// How this recipe's percentages are meant to be read. Recipes written
   /// before this existed are by volume, matching ELR convention.
@@ -462,6 +544,7 @@ class Recipe {
     'percentMode': percentMode.index,
     'baseMode': baseMode.index,
     'flavors': flavors.map((f) => f.toJson()).toList(),
+    'updatedAt': updatedAt?.toIso8601String(),
   };
 
   factory Recipe.fromJson(Map<String, dynamic> j) => Recipe(
@@ -472,6 +555,7 @@ class Recipe {
     targetNic: (j['targetNic'] as num?)?.toDouble() ?? 0,
     targetVgPercent: (j['targetVgPercent'] as num?)?.toDouble() ?? 70,
     percentMode: PercentMode.values[(j['percentMode'] as num?)?.toInt() ?? 0],
+    updatedAt: DateTime.tryParse(j['updatedAt'] as String? ?? ''),
     baseMode: BaseMode.values[(j['baseMode'] as num?)?.toInt() ?? 0],
     flavors: [
       for (final f in (j['flavors'] as List? ?? const []))
@@ -494,6 +578,7 @@ class Purchase {
     this.prevStockMl = 0,
     this.prevCostPerMl = 0,
     this.prevAvgCostPerMl = 0,
+    this.updatedAt,
   });
 
   final String id;
@@ -502,6 +587,7 @@ class Purchase {
   final DateTime at;
   final double volumeMl;
   final double cost;
+  DateTime? updatedAt;
 
   /// Share of an order's shipping attributed to this item.
   final double shippingCost;
@@ -514,6 +600,7 @@ class Purchase {
 
   double get totalCost => cost + shippingCost;
   double get costPerMl => volumeMl > 0 ? totalCost / volumeMl : 0;
+  DateTime get syncStamp => updatedAt ?? beforeSync;
 
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -526,6 +613,7 @@ class Purchase {
     'prevStockMl': prevStockMl,
     'prevCostPerMl': prevCostPerMl,
     'prevAvgCostPerMl': prevAvgCostPerMl,
+    'updatedAt': updatedAt?.toIso8601String(),
   };
 
   factory Purchase.fromJson(Map<String, dynamic> j) => Purchase(
@@ -541,6 +629,7 @@ class Purchase {
     prevStockMl: (j['prevStockMl'] as num?)?.toDouble() ?? 0,
     prevCostPerMl: (j['prevCostPerMl'] as num?)?.toDouble() ?? 0,
     prevAvgCostPerMl: (j['prevAvgCostPerMl'] as num?)?.toDouble() ?? 0,
+    updatedAt: DateTime.tryParse(j['updatedAt'] as String? ?? ''),
   );
 }
 
@@ -596,6 +685,7 @@ class StockAdjustment {
     this.reason = AdjustReason.correction,
     this.costPerMl = 0,
     this.note = '',
+    this.updatedAt,
   });
 
   final String id;
@@ -604,12 +694,14 @@ class StockAdjustment {
   final DateTime at;
   final double deltaMl;
   final AdjustReason reason;
+  DateTime? updatedAt;
 
   /// Cost basis for stock added this way. Only meaningful when [deltaMl] is
   /// positive; lets an opening balance carry its original price.
   final double costPerMl;
 
   final String note;
+  DateTime get syncStamp => updatedAt ?? beforeSync;
 
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -620,6 +712,7 @@ class StockAdjustment {
     'reason': reason.index,
     'costPerMl': costPerMl,
     'note': note,
+    'updatedAt': updatedAt?.toIso8601String(),
   };
 
   factory StockAdjustment.fromJson(Map<String, dynamic> j) => StockAdjustment(
@@ -637,6 +730,7 @@ class StockAdjustment {
         )],
     costPerMl: (j['costPerMl'] as num?)?.toDouble() ?? 0,
     note: j['note'] as String? ?? '',
+    updatedAt: DateTime.tryParse(j['updatedAt'] as String? ?? ''),
   );
 }
 
@@ -1005,6 +1099,7 @@ class MixLog {
     this.tastingNotes = '',
     this.ratedAt,
     this.hardwareCost = 0,
+    this.updatedAt,
   });
 
   final String id;
@@ -1038,6 +1133,11 @@ class MixLog {
   final String tastingNotes;
   final DateTime? ratedAt;
 
+  /// Last modification, used for last-write-wins merging. Null means the
+  /// record predates sync tracking.
+  DateTime? updatedAt;
+
+  DateTime get syncStamp => updatedAt ?? beforeSync;
   double get grandTotalCost => totalCost + hardwareCost;
 
   int get daysSteeping => DateTime.now().difference(mixedAt).inDays;
@@ -1057,6 +1157,7 @@ class MixLog {
     DateTime? ratedAt,
     String? recipeId,
     bool clearRecipeId = false,
+    DateTime? updatedAt,
   }) => MixLog(
     id: id,
     mixedAt: mixedAt,
@@ -1075,6 +1176,7 @@ class MixLog {
     rating: clearRating ? null : (rating ?? this.rating),
     tastingNotes: tastingNotes ?? this.tastingNotes,
     ratedAt: ratedAt ?? this.ratedAt,
+    updatedAt: updatedAt ?? this.updatedAt,
   );
 
   Map<String, dynamic> toJson() => {
@@ -1094,6 +1196,7 @@ class MixLog {
     'rating': rating,
     'tastingNotes': tastingNotes,
     'ratedAt': ratedAt?.toIso8601String(),
+    'updatedAt': updatedAt?.toIso8601String(),
     'lines': lines.map((l) => l.toJson()).toList(),
   };
 
@@ -1123,6 +1226,7 @@ class MixLog {
     rating: (j['rating'] as num?)?.toInt(),
     tastingNotes: j['tastingNotes'] as String? ?? '',
     ratedAt: DateTime.tryParse(j['ratedAt'] as String? ?? ''),
+    updatedAt: DateTime.tryParse(j['updatedAt'] as String? ?? ''),
     lines: [
       for (final l in (j['lines'] as List? ?? const []))
         MixLogLine.fromJson(l as Map<String, dynamic>),

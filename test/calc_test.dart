@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mixlab/models.dart';
 import 'package:mixlab/state.dart';
+import 'package:mixlab/sync_merge.dart';
 import 'package:mixlab/widgets/ingredient_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:mixlab/recipe_import.dart';
@@ -793,7 +794,7 @@ void main() {
       // balance is needed and stock is unchanged.
       expect(s.byId('a')!.stockMl, closeTo(22.5, 1e-9));
       final prefs = await SharedPreferences.getInstance();
-      expect(prefs.getInt('schema_version'), 9);
+      expect(prefs.getInt('schema_version'), AppState.currentSchema);
     });
 
     test('unexplained stock becomes an opening balance', () async {
@@ -897,31 +898,33 @@ void main() {
       expect(back.totalFlavorPercent, 5);
     });
 
-    test(
-      'export/import round-trip preserves counts and is idempotent',
-      () async {
-        SharedPreferences.setMockInitialValues({});
-        final a = AppState(autoLoad: false);
-        a.ingredients.add(flavor('a'));
-        a.recipes.add(Recipe(id: 'r', name: 'R'));
-        final dump = a.exportJson();
+    test('restore replaces everything with the backup', () async {
+      SharedPreferences.setMockInitialValues({});
+      final a = AppState(autoLoad: false);
+      a.ingredients.add(flavor('a'));
+      a.recipes.add(Recipe(id: 'r', name: 'R'));
+      final dump = a.exportJson();
 
-        final b = AppState(autoLoad: false);
-        await b.importJson(dump);
-        expect(b.ingredients.length, 1);
-        expect(b.recipes.length, 1);
+      final b = AppState(autoLoad: false);
+      b.ingredients.add(flavor('local-only'));
+      b.recipes.add(Recipe(id: 'local-r', name: 'Local'));
 
-        await b.importJson(dump);
-        expect(b.ingredients.length, 1);
-        expect(b.recipes.length, 1);
-      },
-    );
+      await b.restoreFromBackup(dump);
+      // Local records are gone, not merged — that is the point of restore.
+      expect(b.ingredients.length, 1);
+      expect(b.ingredients.single.id, 'a');
+      expect(b.recipes.single.id, 'r');
+
+      await b.restoreFromBackup(dump); // idempotent
+      expect(b.ingredients.length, 1);
+      expect(b.recipes.length, 1);
+    });
 
     test('rejects a newer schema', () async {
       SharedPreferences.setMockInitialValues({});
       final s = AppState(autoLoad: false);
       expect(
-        () => s.importJson('{"schema": 999}'),
+        () => s.restoreFromBackup('{"schema": 999}'),
         throwsA(isA<FormatException>()),
       );
     });
@@ -964,7 +967,7 @@ void main() {
     test('importing a v1 backup splits brands too', () async {
       SharedPreferences.setMockInitialValues({});
       final s = AppState(autoLoad: false);
-      await s.importJson(
+      await s.restoreFromBackup(
         jsonEncode({
           'schema': 1,
           'ingredients': [
@@ -1342,26 +1345,29 @@ void main() {
       expect(prefs.getInt('schema_version'), AppState.currentSchema);
     });
 
-    test('v3 backups import with the new fields defaulted', () async {
+    test('a pre-ledger backup gets opening balances', () async {
       SharedPreferences.setMockInitialValues({});
       final s = AppState(autoLoad: false);
-      await s.importJson(
+      await s.restoreFromBackup(
         jsonEncode({
-          'schema': 3,
-          'mixLog': [
+          'schema': 8,
+          'ingredients': [
             {
-              'id': 'old',
-              'mixedAt': '2026-01-01T00:00:00.000',
-              'label': 'Legacy',
-              'lines': <Object>[],
+              'id': 'v',
+              'name': 'VG',
+              'kind': IngredientKind.vg.index,
+              'density': 1.261,
+              'stockMl': 500,
+              'bottleSizeMl': 500,
+              'bottleCost': 14,
             },
           ],
         }),
       );
-      final l = s.mixLog.single;
-      expect(l.rating, isNull);
-      expect(l.tastingNotes, '');
-      expect(l.recipeId, isNull);
+      // Stock lived on the ingredient before v9; without synthesised
+      // opening balances the ledger would replay to zero.
+      expect(s.byId('v')!.stockMl, closeTo(500, 1e-9));
+      expect(s.adjustments.single.reason, AdjustReason.opening);
     });
   });
   group('recipe detail aggregates', () {
@@ -1942,6 +1948,215 @@ some line with no numbers at all
       final cap = s.capacityFor(s.recipes.single);
       expect(cap, isNotNull);
       expect(cap!, greaterThan(60)); // scales, just not identically
+    });
+  });
+
+  group('sync merge', () {
+    /// Two independent installs, each with its own device id.
+    (AppState, AppState) twoDevices() {
+      SharedPreferences.setMockInitialValues({});
+      final a = AppState(autoLoad: false)..deviceId = 'aaa';
+      final b = AppState(autoLoad: false)..deviceId = 'bbb';
+      return (a, b);
+    }
+
+    Ingredient stocked(AppState s, String id, double ml) {
+      final e = flavor(id);
+      e.updatedAt = DateTime.now();
+      s.ingredients.add(e);
+      s.addAdjustment(
+        ingredientId: id,
+        deltaMl: ml,
+        reason: AdjustReason.opening,
+      );
+      return e;
+    }
+
+    test('ledger events from both sides survive — the old union lost one', () {
+      final (a, b) = twoDevices();
+      final fa = stocked(a, 'x', 100);
+      final fb = stocked(b, 'x', 100);
+      // Same opening balance id on both, as v9 produces.
+      b.adjustments.first = StockAdjustment(
+        id: a.adjustments.first.id,
+        ingredientId: 'x',
+        ingredientName: 'x',
+        at: a.adjustments.first.at,
+        deltaMl: 100,
+        reason: AdjustReason.opening,
+      );
+      b.recomputeStock();
+
+      MixResult mix(AppState s, Ingredient f) => calculateMix(
+        amountMl: 100,
+        targetNic: 0,
+        targetVgPercent: 50,
+        settings: s.settings,
+        flavors: [(f, 10)],
+      );
+
+      a.logMix(mix(a, fa), label: 'On A');
+      b.logMix(mix(b, fb), label: 'On B');
+      expect(fa.stockMl, closeTo(90, 1e-9));
+
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.countOf(MergeAction.add), 1); // B's mix
+      a.applyMerge(plan);
+
+      // Both deductions land, which mutable stockMl could never do.
+      expect(a.byId('x')!.stockMl, closeTo(80, 1e-9));
+      expect(a.mixLog.length, 2);
+    });
+
+    test('last write wins on an edited ingredient', () async {
+      final (a, b) = twoDevices();
+      final shared = flavor('x')
+        ..updatedAt = DateTime(2026, 1, 1)
+        ..name = 'Original';
+      a.ingredients.add(shared);
+      b.ingredients.add(
+        Ingredient.fromJson(
+          jsonDecode(jsonEncode(shared.toJson())) as Map<String, dynamic>,
+        ),
+      );
+
+      // B edits later.
+      b.byId('x')!.name = 'Renamed on B';
+      b.upsertIngredient(b.byId('x')!);
+
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.countOf(MergeAction.update), 1);
+      expect(plan.items.single.detail.contains('Renamed on B'), isTrue);
+
+      await a.applyMerge(plan);
+      expect(a.byId('x')!.name, 'Renamed on B');
+    });
+
+    test('an older edit does not overwrite a newer one', () async {
+      final (a, b) = twoDevices();
+      final base = flavor('x')..updatedAt = DateTime(2026, 1, 1);
+      a.ingredients.add(base);
+      b.ingredients.add(
+        Ingredient.fromJson(
+          jsonDecode(jsonEncode(base.toJson())) as Map<String, dynamic>,
+        ),
+      );
+
+      b.byId('x')!.name = 'Stale';
+      b.byId('x')!.updatedAt = DateTime(2026, 1, 2);
+      a.byId('x')!.name = 'Fresh';
+      a.byId('x')!.updatedAt = DateTime(2026, 6, 1);
+
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.items, isEmpty);
+    });
+
+    test('deletions propagate instead of resurrecting', () async {
+      final (a, b) = twoDevices();
+      final r = Recipe(id: 'r1', name: 'Doomed')
+        ..updatedAt = DateTime(2026, 1, 1);
+      a.recipes.add(r);
+      b.recipes.add(
+        Recipe.fromJson(
+          jsonDecode(jsonEncode(r.toJson())) as Map<String, dynamic>,
+        ),
+      );
+
+      b.removeRecipe('r1'); // writes a tombstone
+
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.countOf(MergeAction.delete), 1);
+
+      await a.applyMerge(plan);
+      expect(a.recipeById('r1'), isNull);
+      // The tombstone came across, so a later merge cannot bring it back.
+      expect(a.tombstones.any((t) => t.recordId == 'r1'), isTrue);
+    });
+
+    test('a record edited after deletion is not deleted', () async {
+      final (a, b) = twoDevices();
+      final r = Recipe(id: 'r1', name: 'Kept')
+        ..updatedAt = DateTime(2026, 6, 1);
+      a.recipes.add(r);
+      b.recipes.add(
+        Recipe(id: 'r1', name: 'Kept')..updatedAt = DateTime(2026, 1, 1),
+      );
+      b.removeRecipe('r1');
+      // B's tombstone is now, which beats A's June edit only if later.
+      b.tombstones.last = Tombstone(
+        type: RecordType.recipe,
+        recordId: 'r1',
+        deletedAt: DateTime(2026, 2, 1), // before A's edit
+      );
+
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.countOf(MergeAction.delete), 0);
+    });
+
+    test('declined items are not applied', () async {
+      final (a, b) = twoDevices();
+      b.recipes.add(
+        Recipe(id: 'r1', name: 'Theirs')..updatedAt = DateTime.now(),
+      );
+      b.recipes.add(
+        Recipe(id: 'r2', name: 'Also theirs')..updatedAt = DateTime.now(),
+      );
+
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.items.length, 2);
+      plan.items.first.accept = false;
+
+      await a.applyMerge(plan);
+      expect(a.recipes.length, 1);
+    });
+
+    test('merging twice changes nothing the second time', () async {
+      final (a, b) = twoDevices();
+      stocked(b, 'x', 100);
+      b.recipes.add(Recipe(id: 'r1', name: 'R')..updatedAt = DateTime.now());
+
+      final dump = b.exportJson();
+      await a.applyMerge(a.previewMerge(dump));
+      final after = a.byId('x')!.stockMl;
+
+      final second = a.previewMerge(dump);
+      expect(second.items, isEmpty);
+      await a.applyMerge(second);
+      expect(a.byId('x')!.stockMl, closeTo(after, 1e-9));
+    });
+
+    test('ids carry a device fragment', () {
+      SharedPreferences.setMockInitialValues({});
+      final ids = List.generate(5, (_) => newId());
+      expect(ids.toSet().length, 5);
+      expect(ids.every((i) => i.split('-').length >= 3), isTrue);
+    });
+
+    test('refuses a backup from a newer schema', () {
+      final (a, _) = twoDevices();
+      expect(
+        () => a.previewMerge('{"schema": 999}'),
+        throwsA(isA<FormatException>()),
+      );
+    });
+
+    test('settings only offered when strictly newer', () async {
+      final (a, b) = twoDevices();
+      a.settings.updatedAt = DateTime(2026, 6, 1);
+      b.settings
+        ..currency = 'EUR'
+        ..updatedAt = DateTime(2026, 1, 1);
+      expect(a.previewMerge(b.exportJson()).incomingSettings, isNull);
+
+      b.settings.updatedAt = DateTime(2026, 12, 1);
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.incomingSettings, isNotNull);
+      expect(plan.settingsDetail.contains('EUR'), isTrue);
+
+      // Off by default — settings should not change silently.
+      expect(plan.acceptSettings, isFalse);
+      await a.applyMerge(plan);
+      expect(a.settings.currency, 'USD');
     });
   });
 }

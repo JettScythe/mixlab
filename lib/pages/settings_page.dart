@@ -9,6 +9,7 @@ import '../models.dart';
 import '../state.dart';
 import '../theme.dart';
 import '../widgets/toast.dart';
+import 'merge_preview_page.dart';
 
 /// Platforms where file_selector implements a native save panel.
 bool get _canSaveToFile {
@@ -106,6 +107,30 @@ class _SettingsPageState extends State<SettingsPage> {
     defaultMode = c.defaultPercentMode;
     themeMode = c.themeMode;
     includeHardware = c.includeHardware;
+  }
+
+  Future<void> _merge() async {
+    try {
+      const group = XTypeGroup(label: 'JSON', extensions: ['json']);
+      final file = await openFile(acceptedTypeGroups: const [group]);
+      if (file == null) return;
+
+      final plan = s.previewMerge(await file.readAsString());
+      if (!mounted) return;
+
+      final summary = await Navigator.of(context).push<String>(
+        MaterialPageRoute(
+          builder: (_) => MergePreviewPage(state: s, plan: plan),
+        ),
+      );
+      if (summary == null || !mounted) return;
+      setState(_refillFromSettings);
+      showToast(context, summary);
+    } catch (e, st) {
+      debugPrint('Merge failed: $e');
+      debugPrintStack(stackTrace: st);
+      await _showError('Merge failed', e);
+    }
   }
 
   @override
@@ -365,21 +390,22 @@ class _SettingsPageState extends State<SettingsPage> {
                       label: const Text('Copy JSON'),
                     ),
                     OutlinedButton.icon(
-                      onPressed: () => _import(replace: false),
-                      icon: const Icon(Icons.upload_outlined),
-                      label: const Text('Import (merge)'),
+                      onPressed: _merge,
+                      icon: const Icon(Icons.merge),
+                      label: const Text('Merge '),
                     ),
                     OutlinedButton.icon(
-                      onPressed: () => _import(replace: true),
-                      icon: const Icon(Icons.sync_alt),
-                      label: const Text('Import (replace all)'),
+                      onPressed: () => _restore,
+                      icon: const Icon(Icons.settings_backup_restore),
+                      label: const Text('Restore (replace all)'),
                     ),
                   ],
                 ),
                 Gap.vSm,
                 _hint(
                   theme,
-                  'Schema v${AppState.currentSchema}  •  '
+                  'Schema v${AppState.currentSchema}  •  device '
+                  '${s.deviceId}  •  '
                   '${s.ingredients.length} ingredients, '
                   '${s.recipes.length} recipes, '
                   '${s.mixLog.length} mixes, '
@@ -531,45 +557,49 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  Future<void> _import({required bool replace}) async {
-    if (replace) {
-      final ok = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Replace everything?'),
-          content: const Text(
-            'Your current ingredients, recipes, restocks and mix history '
-            'will be deleted and replaced by the backup.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Replace'),
-            ),
-          ],
+  /// Wholesale restore. Everything local is discarded — this is the
+  /// "put it back the way it was" path. For combining two devices use
+  /// [_merge] instead.
+  Future<void> _restore() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Replace everything?'),
+        content: const Text(
+          'Your current ingredients, recipes, restocks, stock history and '
+          'mix history will be deleted and replaced by the backup.\n\n'
+          'To combine two devices instead, use "Merge from another '
+          'device".',
         ),
-      );
-      if (ok != true) return;
-    }
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+            ),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Replace'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
     try {
       const group = XTypeGroup(label: 'JSON', extensions: ['json']);
       final file = await openFile(acceptedTypeGroups: const [group]);
       if (file == null) return;
-      final summary = await s.importJson(
-        await file.readAsString(),
-        replace: replace,
-      );
+      final summary = await s.restoreFromBackup(await file.readAsString());
       if (!mounted) return;
       setState(_refillFromSettings);
       showToast(context, summary);
     } catch (e, st) {
-      debugPrint('Import failed: $e');
+      debugPrint('Restore failed: $e');
       debugPrintStack(stackTrace: st);
-      await _showError('Import failed', e);
+      await _showError('Restore failed', e);
     }
   }
 

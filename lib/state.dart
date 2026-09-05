@@ -1,12 +1,20 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/material.dart' show IconData, Icons;
 
 import 'models.dart';
+import 'sync_merge.dart';
 
 int _idCounter = 0;
-String newId() => '${DateTime.now().microsecondsSinceEpoch}-${_idCounter++}';
+String _deviceShort = 'local';
+
+/// Ids carry a device fragment so records minted independently on two
+/// devices can never collide during a merge.
+String newId() =>
+    '${DateTime.now().microsecondsSinceEpoch}-${_idCounter++}-$_deviceShort';
 
 class AppState extends ChangeNotifier {
   AppState({bool autoLoad = true}) {
@@ -24,7 +32,13 @@ class AppState extends ChangeNotifier {
   static const _kMixLog = 'mixlog_v1';
   static const _kPurchases = 'purchases_v1';
   static const _kAdjustments = 'adjustments_v1';
-  static const currentSchema = 9;
+  static const _kTombstones = 'tombstones_v1';
+
+  /// Machine state, not app data — deliberately excluded from backups so a
+  /// restored file cannot give two installs the same identity.
+  static const _kDeviceId = 'device_id';
+
+  static const currentSchema = 10;
 
   static const _allKeys = [
     _kSchema,
@@ -34,14 +48,24 @@ class AppState extends ChangeNotifier {
     _kMixLog,
     _kPurchases,
     _kAdjustments,
+    _kTombstones,
   ];
+
+  /// Tombstones stop being useful once every device has seen them, but
+  /// pruning too soon lets a long-offline device resurrect deleted
+  /// records. Six months is generous for a personal app.
+  static const _tombstoneLife = Duration(days: 180);
 
   final List<Ingredient> ingredients = [];
   final List<Recipe> recipes = [];
   final List<MixLog> mixLog = []; // newest first
   final List<Purchase> purchases = []; // newest first
   final List<StockAdjustment> adjustments = []; // newest first
+  final List<Tombstone> tombstones = [];
   Settings settings = Settings();
+
+  /// Stable per-install identity, folded into every generated id.
+  String deviceId = 'local';
 
   bool _ready = false;
   bool get isReady => _ready;
@@ -71,6 +95,16 @@ class AppState extends ChangeNotifier {
     var seeded = false;
     try {
       final prefs = await SharedPreferences.getInstance();
+
+      var dev = prefs.getString(_kDeviceId);
+      if (dev == null || dev.isEmpty) {
+        final r = Random.secure();
+        dev = List.generate(6, (_) => '0123456789abcdef'[r.nextInt(16)]).join();
+        await prefs.setString(_kDeviceId, dev);
+      }
+      deviceId = dev;
+      _deviceShort = dev;
+
       await _migrate(prefs);
 
       ingredients.clear();
@@ -78,6 +112,7 @@ class AppState extends ChangeNotifier {
       mixLog.clear();
       purchases.clear();
       adjustments.clear();
+      tombstones.clear();
 
       final raw = prefs.getString(_kIngredients);
       if (raw != null) {
@@ -138,6 +173,17 @@ class AppState extends ChangeNotifier {
         adjustments.sort((a, b) => b.at.compareTo(a.at));
       }
 
+      final traw = prefs.getString(_kTombstones);
+      if (traw != null) {
+        tombstones.addAll(
+          (jsonDecode(traw) as List).map(
+            (e) => Tombstone.fromJson(e as Map<String, dynamic>),
+          ),
+        );
+      }
+      final cutoff = DateTime.now().subtract(_tombstoneLife);
+      tombstones.removeWhere((t) => t.deletedAt.isBefore(cutoff));
+
       // Stock is derived, so the persisted snapshot is authoritative only
       // until the ledger has been replayed.
       recomputeStock();
@@ -166,15 +212,13 @@ class AppState extends ChangeNotifier {
       return;
     }
 
-    List<Map<String, dynamic>> decode(String? raw) => raw == null
-        ? <Map<String, dynamic>>[]
-        : (jsonDecode(raw) as List).cast<Map<String, dynamic>>().toList();
-
     if (v < 2) {
       // v2: pull recognised brand shorthands out of the combined name.
       final raw = prefs.getString(_kIngredients);
       if (raw != null) {
-        final list = decode(raw);
+        final list = (jsonDecode(raw) as List)
+            .cast<Map<String, dynamic>>()
+            .toList();
         for (final j in list) {
           final existing = j['brand'] as String?;
           if (existing != null && existing.isNotEmpty) continue;
@@ -190,23 +234,26 @@ class AppState extends ChangeNotifier {
 
     if (v < 3) {
       // v3 adds avgCostPerMl, purchases, and achieved nic/VG on mix logs.
-      // All additive with safe defaults.
+      // All are additive with safe defaults, so no transform is needed.
       v = 3;
     }
 
     if (v < 4) {
-      // v4 adds recipeId, rating and tasting notes to mix logs. Old
-      // entries can often be linked to a recipe by matching the label
-      // they were mixed under.
+      // v4 adds recipeId, rating and tasting notes to mix logs. The new
+      // fields default safely, but old entries can often be linked to a
+      // recipe by matching the label they were mixed under.
       final rawLog = prefs.getString(_kMixLog);
       final rawRec = prefs.getString(_kRecipes);
       if (rawLog != null && rawRec != null) {
         final byName = <String, String>{};
-        for (final r in decode(rawRec)) {
+        for (final r
+            in (jsonDecode(rawRec) as List).cast<Map<String, dynamic>>()) {
           final n = (r['name'] as String? ?? '').trim().toLowerCase();
           if (n.isNotEmpty) byName.putIfAbsent(n, () => r['id'] as String);
         }
-        final logs = decode(rawLog);
+        final logs = (jsonDecode(rawLog) as List)
+            .cast<Map<String, dynamic>>()
+            .toList();
         var linked = 0;
         for (final l in logs) {
           if (l['recipeId'] != null) continue;
@@ -225,22 +272,23 @@ class AppState extends ChangeNotifier {
     }
 
     if (v < 5) {
-      // v5 adds additive/thinner kinds and per-recipe percent mode. The
-      // bump exists so an older build refuses v5 data rather than crashing
-      // on an unknown enum index.
+      // v5 adds additive/thinner ingredient kinds and per-recipe percent
+      // mode. Both are additive with safe defaults, so no transform runs —
+      // the bump exists so an older build refuses to import v5 data rather
+      // than crashing on an unknown enum index.
       v = 5;
     }
 
     if (v < 6) {
       // v6 adds Recipe.baseMode. Existing recipes were mixed to their
-      // stored ratio, which is the default.
+      // stored ratio, which is the default, so no transform is needed.
       v = 6;
     }
 
     if (v < 7) {
       // v7 adds nicotine strength units and the salt flag. Existing bases
-      // were all mg/mL, which is the default. The bump stops an older
-      // build reading a mg/g base as mg/mL.
+      // were all mg/mL, which is the default, so no transform is needed.
+      // The bump stops an older build reading a mg/g base as mg/mL.
       v = 7;
     }
 
@@ -259,7 +307,23 @@ class AppState extends ChangeNotifier {
       // exactly equal to what the user sees today.
       final rawIng = prefs.getString(_kIngredients);
       if (rawIng != null) {
-        final ings = decode(rawIng);
+        final ings = (jsonDecode(rawIng) as List)
+            .cast<Map<String, dynamic>>()
+            .toList();
+
+        List<Map<String, dynamic>> decode(String? raw) {
+          if (raw == null) return <Map<String, dynamic>>[];
+          try {
+            return (jsonDecode(raw) as List)
+                .cast<Map<String, dynamic>>()
+                .toList();
+          } catch (e) {
+            // A corrupt side-blob should not block the whole migration;
+            // the opening balance absorbs whatever it would have replayed.
+            debugPrint('v9: could not read a ledger source, skipping: $e');
+            return <Map<String, dynamic>>[];
+          }
+        }
 
         final replayed = <String, double>{};
         for (final p in decode(prefs.getString(_kPurchases))) {
@@ -315,6 +379,14 @@ class AppState extends ChangeNotifier {
       v = 9;
     }
 
+    if (v < 10) {
+      // v10 adds sync metadata: updatedAt on every record and tombstones
+      // for deletions. Existing records get a null updatedAt, which reads
+      // as the epoch — so any edited copy on another device wins over an
+      // untouched one, which is the behaviour we want.
+      v = 10;
+    }
+
     await prefs.setInt(_kSchema, v);
   }
 
@@ -362,6 +434,10 @@ class AppState extends ChangeNotifier {
       _kAdjustments,
       jsonEncode(adjustments.map((e) => e.toJson()).toList()),
     );
+    await prefs.setString(
+      _kTombstones,
+      jsonEncode(tombstones.map((e) => e.toJson()).toList()),
+    );
   }
 
   /// Awaits any pending write. Use in tests and before export.
@@ -372,6 +448,7 @@ class AppState extends ChangeNotifier {
   String exportJson() => const JsonEncoder.withIndent('  ').convert({
     'app': 'mixlab',
     'schema': currentSchema,
+    'deviceId': deviceId,
     'exportedAt': DateTime.now().toIso8601String(),
     'settings': settings.toJson(),
     'ingredients': ingredients.map((e) => e.toJson()).toList(),
@@ -379,6 +456,7 @@ class AppState extends ChangeNotifier {
     'mixLog': mixLog.map((e) => e.toJson()).toList(),
     'purchases': purchases.map((e) => e.toJson()).toList(),
     'adjustments': adjustments.map((e) => e.toJson()).toList(),
+    'tombstones': tombstones.map((e) => e.toJson()).toList(),
   });
 
   /// Raw stored strings, for salvaging data when load() has failed.
@@ -391,7 +469,10 @@ class AppState extends ChangeNotifier {
     return const JsonEncoder.withIndent('  ').convert(out);
   }
 
-  Future<String> importJson(String raw, {bool replace = false}) async {
+  /// Wholesale restore. Everything local is discarded — this is the
+  /// "put it back the way it was" path, not the sync path. For combining
+  /// two devices use [previewMerge] and [applyMerge].
+  Future<String> restoreFromBackup(String raw) async {
     final decoded = jsonDecode(raw);
     if (decoded is! Map<String, dynamic>) {
       throw const FormatException('Not an object at the top level.');
@@ -399,21 +480,18 @@ class AppState extends ChangeNotifier {
     final schema = (decoded['schema'] as num?)?.toInt() ?? 1;
     if (schema > currentSchema) {
       throw FormatException(
-        'Backup schema v$schema is newer than this build (v$currentSchema).',
+        'Backup schema v$schema is newer than this build '
+        '(v$currentSchema).',
       );
     }
 
-    if (replace) {
-      ingredients.clear();
-      recipes.clear();
-      mixLog.clear();
-      purchases.clear();
-      adjustments.clear();
-    }
+    ingredients.clear();
+    recipes.clear();
+    mixLog.clear();
+    purchases.clear();
+    adjustments.clear();
+    tombstones.clear();
 
-    var ni = 0, nr = 0, nl = 0, np = 0, na = 0;
-
-    final haveIng = ingredients.map((e) => e.id).toSet();
     for (final e in (decoded['ingredients'] as List? ?? const [])) {
       final j = e as Map<String, dynamic>;
       if (schema < 2 && ((j['brand'] as String?) ?? '').isEmpty) {
@@ -421,77 +499,54 @@ class AppState extends ChangeNotifier {
         j['brand'] = b;
         j['name'] = n;
       }
-      final ing = Ingredient.fromJson(j);
-      if (haveIng.add(ing.id)) {
-        ingredients.add(ing);
-        ni++;
-      }
+      ingredients.add(Ingredient.fromJson(j));
     }
-
-    final haveRec = recipes.map((e) => e.id).toSet();
     for (final e in (decoded['recipes'] as List? ?? const [])) {
-      final r = Recipe.fromJson(e as Map<String, dynamic>);
-      if (haveRec.add(r.id)) {
-        recipes.add(r);
-        nr++;
-      }
+      recipes.add(Recipe.fromJson(e as Map<String, dynamic>));
     }
-
-    final haveLog = mixLog.map((e) => e.id).toSet();
     for (final e in (decoded['mixLog'] as List? ?? const [])) {
-      final l = MixLog.fromJson(e as Map<String, dynamic>);
-      if (haveLog.add(l.id)) {
-        mixLog.add(l);
-        nl++;
-      }
+      mixLog.add(MixLog.fromJson(e as Map<String, dynamic>));
     }
-
-    final havePur = purchases.map((e) => e.id).toSet();
     for (final e in (decoded['purchases'] as List? ?? const [])) {
-      final p = Purchase.fromJson(e as Map<String, dynamic>);
-      if (havePur.add(p.id)) {
-        purchases.add(p);
-        np++;
-      }
+      purchases.add(Purchase.fromJson(e as Map<String, dynamic>));
     }
-
-    final haveAdj = adjustments.map((e) => e.id).toSet();
     for (final e in (decoded['adjustments'] as List? ?? const [])) {
-      final a = StockAdjustment.fromJson(e as Map<String, dynamic>);
-      if (haveAdj.add(a.id)) {
-        adjustments.add(a);
-        na++;
-      }
+      adjustments.add(StockAdjustment.fromJson(e as Map<String, dynamic>));
+    }
+    for (final e in (decoded['tombstones'] as List? ?? const [])) {
+      tombstones.add(Tombstone.fromJson(e as Map<String, dynamic>));
     }
 
-    // A pre-v9 backup carries stock as a number with no ledger behind it.
-    // Give each imported ingredient an opening balance so the replay
-    // reproduces what the backup said.
+    // A pre-v9 backup carries stock on the ingredient rather than in a
+    // ledger, so seed opening balances or everything reads as zero.
     if (schema < 9) {
+      final replayed = <String, double>{};
+      for (final p in purchases) {
+        replayed[p.ingredientId] = (replayed[p.ingredientId] ?? 0) + p.volumeMl;
+      }
+      for (final l in mixLog) {
+        for (final line in l.lines) {
+          final id = line.ingredientId;
+          if (id == null) continue;
+          replayed[id] = (replayed[id] ?? 0) - line.requestedMl;
+        }
+      }
       final now = DateTime.now();
-      for (final e in (decoded['ingredients'] as List? ?? const [])) {
-        final j = e as Map<String, dynamic>;
-        final id = j['id'] as String;
-        final stock = (j['stockMl'] as num?)?.toDouble() ?? 0;
-        if (stock.abs() < 1e-9) continue;
-        final openingId = 'opening-import-$id';
-        if (!haveAdj.add(openingId)) continue;
-        final avg = (j['avgCostPerMl'] as num?)?.toDouble() ?? 0;
-        final size = (j['bottleSizeMl'] as num?)?.toDouble() ?? 0;
-        final price = (j['bottleCost'] as num?)?.toDouble() ?? 0;
+      for (final e in ingredients) {
+        final delta = e.stockMl - (replayed[e.id] ?? 0);
+        if (delta.abs() < 1e-9) continue;
         adjustments.add(
           StockAdjustment(
-            id: openingId,
-            ingredientId: id,
-            ingredientName: j['name'] as String? ?? '',
+            id: 'opening-${e.id}',
+            ingredientId: e.id,
+            ingredientName: e.displayName,
             at: now,
-            deltaMl: stock,
+            deltaMl: delta,
             reason: AdjustReason.opening,
-            costPerMl: avg > 0 ? avg : (size > 0 ? price / size : 0),
-            note: 'Opening balance from an imported pre-ledger backup.',
+            costPerMl: delta > 0 ? e.costPerMl : 0,
+            note: 'Opening balance from a pre-ledger backup.',
           ),
         );
-        na++;
       }
     }
 
@@ -506,8 +561,112 @@ class AppState extends ChangeNotifier {
     recomputeStock();
     notifyListeners();
     await _save();
-    return 'Imported $ni ingredients, $nr recipes, $nl mixes, $np restocks, '
-        '$na adjustments.';
+    return 'Restored ${ingredients.length} ingredients, '
+        '${recipes.length} recipes, ${mixLog.length} mixes.';
+  }
+
+  // ------------------------------------------------------------------- sync
+
+  /// Builds a review plan without changing anything.
+  MergePlan previewMerge(String raw) => buildMergePlan(
+    rawJson: raw,
+    ingredients: ingredients,
+    recipes: recipes,
+    mixLog: mixLog,
+    purchases: purchases,
+    adjustments: adjustments,
+    tombstones: tombstones,
+    settings: settings,
+    currentSchema: currentSchema,
+  );
+
+  /// Applies the accepted parts of a plan. Incoming records keep their own
+  /// updatedAt, so a further merge in either direction is stable.
+  Future<String> applyMerge(MergePlan plan) async {
+    var added = 0, updated = 0, deleted = 0;
+
+    for (final item in plan.items) {
+      if (!item.accept) continue;
+      switch (item.action) {
+        case MergeAction.delete:
+          switch (item.type) {
+            case RecordType.ingredient:
+              ingredients.removeWhere((e) => e.id == item.id);
+            case RecordType.recipe:
+              recipes.removeWhere((e) => e.id == item.id);
+            case RecordType.mixLog:
+              mixLog.removeWhere((e) => e.id == item.id);
+            case RecordType.purchase:
+              purchases.removeWhere((e) => e.id == item.id);
+            case RecordType.adjustment:
+              adjustments.removeWhere((e) => e.id == item.id);
+          }
+          deleted++;
+
+        case MergeAction.add:
+        case MergeAction.update:
+          final isAdd = item.action == MergeAction.add;
+          switch (item.type) {
+            case RecordType.ingredient:
+              final r = item.incoming! as Ingredient;
+              final i = ingredients.indexWhere((e) => e.id == r.id);
+              if (i >= 0) {
+                ingredients[i] = r;
+              } else {
+                ingredients.add(r);
+              }
+            case RecordType.recipe:
+              final r = item.incoming! as Recipe;
+              final i = recipes.indexWhere((e) => e.id == r.id);
+              if (i >= 0) {
+                recipes[i] = r;
+              } else {
+                recipes.add(r);
+              }
+            case RecordType.mixLog:
+              final r = item.incoming! as MixLog;
+              final i = mixLog.indexWhere((e) => e.id == r.id);
+              if (i >= 0) {
+                mixLog[i] = r;
+              } else {
+                mixLog.add(r);
+              }
+            case RecordType.purchase:
+              purchases.add(item.incoming! as Purchase);
+            case RecordType.adjustment:
+              adjustments.add(item.incoming! as StockAdjustment);
+          }
+          if (isAdd) {
+            added++;
+          } else {
+            updated++;
+          }
+      }
+    }
+
+    if (plan.acceptSettings && plan.incomingSettings != null) {
+      settings = plan.incomingSettings!;
+    }
+
+    // Fold in their tombstones so this device stops re-offering records
+    // the other side already deleted.
+    for (final t in plan.tombstones) {
+      final existing = tombstones.indexWhere((x) => x.key == t.key);
+      if (existing < 0) {
+        tombstones.add(t);
+      } else if (t.deletedAt.isAfter(tombstones[existing].deletedAt)) {
+        tombstones[existing] = t;
+      }
+    }
+
+    mixLog.sort((a, b) => b.mixedAt.compareTo(a.mixedAt));
+    purchases.sort((a, b) => b.at.compareTo(a.at));
+    adjustments.sort((a, b) => b.at.compareTo(a.at));
+
+    recomputeStock();
+    notifyListeners();
+    await _save();
+    return 'Merged: $added added, $updated updated, $deleted removed.';
   }
 
   Future<void> factoryReset() async {
@@ -516,6 +675,7 @@ class AppState extends ChangeNotifier {
     mixLog.clear();
     purchases.clear();
     adjustments.clear();
+    tombstones.clear();
     settings = Settings();
     _seedIngredients();
     _seedRecipes();
@@ -552,6 +712,7 @@ class AppState extends ChangeNotifier {
       bottleSizeMl: size,
       bottleCost: cost,
       nicStrength: nic,
+      updatedAt: DateTime.now(),
     );
 
     final seeded = [
@@ -581,6 +742,7 @@ class AppState extends ChangeNotifier {
           reason: AdjustReason.opening,
           costPerMl: e.bottleCost / e.bottleSizeMl,
           note: 'Starting stock.',
+          updatedAt: now,
         ),
       );
     }
@@ -614,20 +776,21 @@ class AppState extends ChangeNotifier {
       targetNic: 3,
       targetVgPercent: 70,
       flavors: flavors,
+      updatedAt: DateTime.now(),
     );
 
     recipes.addAll([
       r(
         'Mustard Milk',
         "u/Vurve's 2014 strawberry milk — the recipe that made TFA "
-            'Strawberry Ripe famous. Shake-and-vape friendly; some versions '
-            'run 6/6.',
+            'Strawberry Ripe famous. Shake-and-vape friendly; some '
+            'versions run 6/6.',
         [rf(sbRipe, 8), rf(vbic, 6)],
       ),
       r(
         'Nana Cream',
-        "Botboy141's homage to the Bombies classic. Commonly posted at 6/4; "
-            'add 2% Vanilla Bean Ice Cream for a richer take.',
+        "Botboy141's homage to the Bombies classic. Commonly posted at "
+            '6/4; add 2% Vanilla Bean Ice Cream for a richer take.',
         [rf(bananaCream, 6), rf(sbRipe, 4)],
       ),
       r(
@@ -642,8 +805,8 @@ class AppState extends ChangeNotifier {
       ]),
       r(
         'Castle Long (clone)',
-        'Five Pawns-style coconut-almond-bourbon custard. Long steep, '
-            '3+ weeks.',
+        'Five Pawns-style coconut-almond-bourbon custard. '
+            'Long steep, 3+ weeks.',
         [
           rf(custard, 3),
           rf(bourbon, 2),
@@ -669,9 +832,200 @@ class AppState extends ChangeNotifier {
       brand: brand,
       kind: IngredientKind.flavor,
       density: settings.densityForCarrier(IngredientKind.flavor, 0),
+      updatedAt: DateTime.now(),
     );
     ingredients.add(ing);
     return ing;
+  }
+
+  // ----------------------------------------------------------------- queries
+
+  Ingredient? byId(String? id) {
+    if (id == null) return null;
+    for (final e in ingredients) {
+      if (e.id == id) return e;
+    }
+    return null;
+  }
+
+  Ingredient? flavorByName(String query) {
+    final q = query.trim().toLowerCase();
+    if (q.isEmpty) return null;
+    for (final e in ingredients) {
+      if (e.kind != IngredientKind.flavor) continue;
+      if (e.displayName.toLowerCase() == q || e.name.toLowerCase() == q) {
+        return e;
+      }
+    }
+    return null;
+  }
+
+  /// Existing ingredient with the same brand + name, ignoring [exceptId].
+  Ingredient? findDuplicate(String brand, String name, {String? exceptId}) {
+    final key = '${brand.trim().toLowerCase()}|${name.trim().toLowerCase()}';
+    for (final e in ingredients) {
+      if (e.id == exceptId) continue;
+      if (e.dedupKey == key) return e;
+    }
+    return null;
+  }
+
+  Recipe? recipeById(String? id) {
+    if (id == null) return null;
+    for (final r in recipes) {
+      if (r.id == id) return r;
+    }
+    return null;
+  }
+
+  /// Another recipe with the same name, ignoring [exceptId]. Not blocking —
+  /// duplicate names are legal, just worth flagging.
+  Recipe? recipeByName(String name, {String? exceptId}) {
+    final q = name.trim().toLowerCase();
+    if (q.isEmpty) return null;
+    for (final r in recipes) {
+      if (r.id == exceptId) continue;
+      if (r.name.trim().toLowerCase() == q) return r;
+    }
+    return null;
+  }
+
+  List<Recipe> recipesUsing(String ingredientId) => [
+    for (final r in recipes)
+      if (r.flavors.any((f) => f.ingredientId == ingredientId)) r,
+  ];
+
+  int mixesUsing(String ingredientId) => mixLog
+      .where((l) => l.lines.any((x) => x.ingredientId == ingredientId))
+      .length;
+
+  List<Ingredient> ofKind(IngredientKind k) =>
+      ingredients.where((e) => e.kind == k).toList();
+
+  Ingredient? firstOfKind(IngredientKind k) {
+    final list = ofKind(k);
+    return list.isEmpty ? null : list.first;
+  }
+
+  /// Everything addable by percentage: flavors, additives and thinners.
+  List<Ingredient> get concentrates => [
+    for (final e in ingredients)
+      if (isConcentrate(e.kind)) e,
+  ];
+
+  List<String> get brands {
+    final set = <String>{};
+    for (final e in ingredients) {
+      if (e.brand.isNotEmpty) set.add(e.brand);
+    }
+    final list = set.toList()..sort();
+    return list;
+  }
+
+  List<Ingredient> get suspectDensities => [
+    for (final e in ingredients)
+      if (e.densityLooksWrong(settings)) e,
+  ];
+
+  double get stockValue =>
+      ingredients.fold(0.0, (a, e) => a + e.stockMl * e.costPerMl);
+
+  double get lifetimeMixCost => mixLog.fold(0.0, (a, l) => a + l.totalCost);
+
+  double get lifetimeHardwareCost =>
+      mixLog.fold(0.0, (a, l) => a + l.hardwareCost);
+
+  double get lifetimeSpend => purchases.fold(0.0, (a, p) => a + p.totalCost);
+
+  List<MixLog> mixesForRecipe(String recipeId) => [
+    for (final l in mixLog)
+      if (l.recipeId == recipeId) l,
+  ];
+
+  int mixCountForRecipe(String recipeId) => mixesForRecipe(recipeId).length;
+
+  /// Most recent mix of a recipe, or null if never mixed.
+  DateTime? lastMixedForRecipe(String recipeId) {
+    DateTime? best;
+    for (final l in mixLog) {
+      if (l.recipeId != recipeId) continue;
+      if (best == null || l.mixedAt.isAfter(best)) best = l.mixedAt;
+    }
+    return best;
+  }
+
+  /// Mean rating across rated mixes of a recipe, or null if none are rated.
+  double? averageRatingForRecipe(String recipeId) {
+    var sum = 0, n = 0;
+    for (final l in mixLog) {
+      if (l.recipeId != recipeId || l.rating == null) continue;
+      sum += l.rating!;
+      n++;
+    }
+    return n == 0 ? null : sum / n;
+  }
+
+  int get ratedMixCount => mixLog.where((l) => l.rating != null).length;
+
+  /// Rebuilds a recipe from what was actually mixed, so a log entry can be
+  /// pushed back through the calculator. Flavor percentages are derived from
+  /// the volumes requested at mix time, not from the current recipe — a
+  /// remix reproduces that bottle even if the recipe has since changed.
+  ///
+  /// The returned recipe carries a synthetic id, so the calculator treats it
+  /// as unsaved rather than offering to overwrite anything.
+  Recipe recipeFromLog(MixLog l) {
+    final flavors = <RecipeFlavor>[];
+    for (final line in l.lines) {
+      final ing = byId(line.ingredientId);
+      if (ing == null || !isConcentrate(ing.kind)) continue;
+      if (line.requestedMl <= 0 || l.batchMl <= 0) continue;
+      flavors.add(
+        RecipeFlavor(
+          ingredientId: ing.id,
+          name: ing.displayName,
+          percent: roundPercent(line.requestedMl / l.batchMl * 100),
+        ),
+      );
+    }
+    return Recipe(
+      id: 'remix:${l.id}',
+      name: l.label,
+      notes: l.tastingNotes,
+      batchMl: l.batchMl,
+      targetNic: l.targetNic,
+      targetVgPercent: l.targetVgPercent,
+      flavors: flavors,
+    );
+  }
+
+  /// Largest batch of [r] mixable from current stock, or null if unlimited.
+  /// Computed at the recipe's own batch size and scaled.
+  double? capacityFor(Recipe r) {
+    final ref = r.batchMl > 0 ? r.batchMl : 30.0;
+    final result = calculateMix(
+      amountMl: ref,
+      targetNic: r.targetNic,
+      targetVgPercent: r.targetVgPercent,
+      settings: settings,
+      percentMode: r.percentMode,
+      baseMode: r.baseMode,
+      nic: firstOfKind(IngredientKind.nicotine),
+      pg: firstOfKind(IngredientKind.pg),
+      vg: firstOfKind(IngredientKind.vg),
+      flavors: [
+        for (final f in r.flavors)
+          if (byId(f.ingredientId) != null) (byId(f.ingredientId)!, f.percent),
+      ],
+    );
+    return maxBatchMl(result, ref, ingredients);
+  }
+
+  /// True when the recipe can be mixed at its stated batch size right now.
+  bool canMakeNow(Recipe r) {
+    if (r.flavors.any((f) => byId(f.ingredientId) == null)) return false;
+    final cap = capacityFor(r);
+    return cap == null || cap >= (r.batchMl > 0 ? r.batchMl : 30.0) - 1e-9;
   }
 
   // ------------------------------------------------------------------ ledger
@@ -720,7 +1074,7 @@ class AppState extends ChangeNotifier {
 
   /// Full ledger for one ingredient, oldest first, with running balance.
   List<StockLedgerEntry> ledgerFor(String ingredientId) {
-    final raw = <(DateTime, double, String, dynamic, String, String?, bool)>[];
+    final raw = <(DateTime, double, String, IconData, String, String?, bool)>[];
 
     for (final p in purchases) {
       if (p.ingredientId != ingredientId) continue;
@@ -728,7 +1082,7 @@ class AppState extends ChangeNotifier {
         p.at,
         p.volumeMl,
         'Restocked',
-        adjustReasonIcon(AdjustReason.other),
+        Icons.add_shopping_cart_outlined,
         '${money(p.totalCost, settings)}'
             '${p.shippingCost > 0 ? ' incl. ${money(p.shippingCost, settings)} shipping' : ''}',
         p.id,
@@ -743,7 +1097,7 @@ class AppState extends ChangeNotifier {
           l.mixedAt,
           -line.requestedMl,
           'Mixed "${l.label}"',
-          adjustReasonIcon(AdjustReason.other),
+          Icons.science_outlined,
           '${line.grams.toStringAsFixed(2)} g',
           l.id,
           true,
@@ -773,7 +1127,7 @@ class AppState extends ChangeNotifier {
           at: r.$1,
           deltaMl: r.$2,
           label: r.$3,
-          icon: r.$4 as dynamic,
+          icon: r.$4,
           detail: r.$5,
           sourceId: r.$6,
           canUndo: r.$7,
@@ -787,198 +1141,29 @@ class AppState extends ChangeNotifier {
       if (e.stockIsNegative) e,
   ];
 
-  // ----------------------------------------------------------------- queries
-
-  Ingredient? byId(String? id) {
-    if (id == null) return null;
-    for (final e in ingredients) {
-      if (e.id == id) return e;
-    }
-    return null;
-  }
-
-  Ingredient? flavorByName(String query) {
-    final q = query.trim().toLowerCase();
-    if (q.isEmpty) return null;
-    for (final e in ingredients) {
-      if (!isConcentrate(e.kind)) continue;
-      if (e.displayName.toLowerCase() == q || e.name.toLowerCase() == q) {
-        return e;
-      }
-    }
-    return null;
-  }
-
-  /// Existing ingredient with the same brand + name, ignoring [exceptId].
-  Ingredient? findDuplicate(String brand, String name, {String? exceptId}) {
-    final key = '${brand.trim().toLowerCase()}|${name.trim().toLowerCase()}';
-    for (final e in ingredients) {
-      if (e.id == exceptId) continue;
-      if (e.dedupKey == key) return e;
-    }
-    return null;
-  }
-
-  Recipe? recipeById(String? id) {
-    if (id == null) return null;
-    for (final r in recipes) {
-      if (r.id == id) return r;
-    }
-    return null;
-  }
-
-  /// Another recipe with the same name, ignoring [exceptId]. Not blocking —
-  /// duplicate names are legal, just worth flagging.
-  Recipe? recipeByName(String name, {String? exceptId}) {
-    final q = name.trim().toLowerCase();
-    if (q.isEmpty) return null;
-    for (final r in recipes) {
-      if (r.id == exceptId) continue;
-      if (r.name.trim().toLowerCase() == q) return r;
-    }
-    return null;
-  }
-
-  List<Recipe> recipesUsing(String ingredientId) => [
-    for (final r in recipes)
-      if (r.flavors.any((f) => f.ingredientId == ingredientId)) r,
-  ];
-
-  int mixesUsing(String ingredientId) => mixLog
-      .where((l) => l.lines.any((x) => x.ingredientId == ingredientId))
-      .length;
-
-  List<MixLog> mixesForRecipe(String recipeId) => [
-    for (final l in mixLog)
-      if (l.recipeId == recipeId) l,
-  ];
-
-  int mixCountForRecipe(String recipeId) => mixesForRecipe(recipeId).length;
-
-  /// Most recent mix of a recipe, or null if never mixed.
-  DateTime? lastMixedForRecipe(String recipeId) {
-    DateTime? best;
-    for (final l in mixLog) {
-      if (l.recipeId != recipeId) continue;
-      if (best == null || l.mixedAt.isAfter(best)) best = l.mixedAt;
-    }
-    return best;
-  }
-
-  /// Mean rating across rated mixes of a recipe, or null if none are rated.
-  double? averageRatingForRecipe(String recipeId) {
-    var sum = 0, n = 0;
-    for (final l in mixLog) {
-      if (l.recipeId != recipeId || l.rating == null) continue;
-      sum += l.rating!;
-      n++;
-    }
-    return n == 0 ? null : sum / n;
-  }
-
-  int get ratedMixCount => mixLog.where((l) => l.rating != null).length;
-
-  /// Rebuilds a recipe from what was actually mixed, so a log entry can be
-  /// pushed back through the calculator. Flavor percentages are derived
-  /// from the volumes requested at mix time, not from the current recipe —
-  /// a remix reproduces that bottle even if the recipe has since changed.
-  ///
-  /// The returned recipe carries a synthetic id, so the calculator treats
-  /// it as unsaved rather than offering to overwrite anything.
-  Recipe recipeFromLog(MixLog l) {
-    final flavors = <RecipeFlavor>[];
-    for (final line in l.lines) {
-      final ing = byId(line.ingredientId);
-      if (ing == null || !isConcentrate(ing.kind)) continue;
-      if (line.requestedMl <= 0 || l.batchMl <= 0) continue;
-      flavors.add(
-        RecipeFlavor(
-          ingredientId: ing.id,
-          name: ing.displayName,
-          percent: roundPercent(line.requestedMl / l.batchMl * 100),
-        ),
-      );
-    }
-    return Recipe(
-      id: 'remix:${l.id}',
-      name: l.label,
-      notes: l.tastingNotes,
-      batchMl: l.batchMl,
-      targetNic: l.targetNic,
-      targetVgPercent: l.targetVgPercent,
-      flavors: flavors,
-    );
-  }
-
-  List<Ingredient> ofKind(IngredientKind k) =>
-      ingredients.where((e) => e.kind == k).toList();
-
-  Ingredient? firstOfKind(IngredientKind k) {
-    final list = ofKind(k);
-    return list.isEmpty ? null : list.first;
-  }
-
-  /// Everything addable by percentage: flavors, additives and thinners.
-  List<Ingredient> get concentrates => [
-    for (final e in ingredients)
-      if (isConcentrate(e.kind)) e,
-  ];
-
-  List<String> get brands {
-    final set = <String>{};
-    for (final e in ingredients) {
-      if (e.brand.isNotEmpty) set.add(e.brand);
-    }
-    final list = set.toList()..sort();
-    return list;
-  }
-
-  List<Ingredient> get suspectDensities => [
-    for (final e in ingredients)
-      if (e.densityLooksWrong(settings)) e,
-  ];
-
-  double get stockValue =>
-      ingredients.fold(0.0, (a, e) => a + e.stockMl * e.costPerMl);
-
-  double get lifetimeMixCost => mixLog.fold(0.0, (a, l) => a + l.totalCost);
-
-  double get lifetimeHardwareCost =>
-      mixLog.fold(0.0, (a, l) => a + l.hardwareCost);
-
-  double get lifetimeSpend => purchases.fold(0.0, (a, p) => a + p.totalCost);
-
-  /// Largest batch of [r] mixable from current stock, or null if unlimited.
-  double? capacityFor(Recipe r) {
-    final ref = r.batchMl > 0 ? r.batchMl : 30.0;
-    final result = calculateMix(
-      amountMl: ref,
-      targetNic: r.targetNic,
-      targetVgPercent: r.targetVgPercent,
-      settings: settings,
-      percentMode: r.percentMode,
-      baseMode: r.baseMode,
-      nic: firstOfKind(IngredientKind.nicotine),
-      pg: firstOfKind(IngredientKind.pg),
-      vg: firstOfKind(IngredientKind.vg),
-      flavors: [
-        for (final f in r.flavors)
-          if (byId(f.ingredientId) != null) (byId(f.ingredientId)!, f.percent),
-      ],
-    );
-    return maxBatchMl(result, ref, ingredients);
-  }
-
-  /// True when the recipe can be mixed at its stated batch size right now.
-  bool canMakeNow(Recipe r) {
-    if (r.flavors.any((f) => byId(f.ingredientId) == null)) return false;
-    final cap = capacityFor(r);
-    return cap == null || cap >= (r.batchMl > 0 ? r.batchMl : 30.0) - 1e-9;
-  }
-
   // ---------------------------------------------------------------- mutation
 
+  /// Records a deletion so a merge does not resurrect the record.
+  void _bury(RecordType type, String id, String label) {
+    tombstones.removeWhere((t) => t.type == type && t.recordId == id);
+    tombstones.add(
+      Tombstone(
+        type: type,
+        recordId: id,
+        deletedAt: DateTime.now(),
+        label: label,
+      ),
+    );
+  }
+
+  /// Lifts a tombstone, for undo. Without this the next merge would
+  /// re-delete a record the user just restored.
+  void _exhume(RecordType type, String id) {
+    tombstones.removeWhere((t) => t.type == type && t.recordId == id);
+  }
+
   void upsertIngredient(Ingredient ing) {
+    ing.updatedAt = DateTime.now();
     final i = ingredients.indexWhere((e) => e.id == ing.id);
     if (i >= 0) {
       ingredients[i] = ing;
@@ -990,19 +1175,22 @@ class AppState extends ChangeNotifier {
     _save();
   }
 
-  /// Removes an ingredient and returns it plus its index, so the caller can
-  /// offer an undo. Its ledger events are left alone, so restoring brings
-  /// the stock back exactly.
+  /// Removes an ingredient and returns it with its index so the caller can
+  /// offer an undo. Callers must confirm first — see [recipesUsing].
   (Ingredient, int)? removeIngredient(String id) {
     final i = ingredients.indexWhere((e) => e.id == id);
     if (i < 0) return null;
     final removed = ingredients.removeAt(i);
+    _bury(RecordType.ingredient, id, removed.displayName);
+    recomputeStock();
     notifyListeners();
     _save();
     return (removed, i);
   }
 
   void restoreIngredient(Ingredient ing, int index) {
+    _exhume(RecordType.ingredient, ing.id);
+    ing.updatedAt = DateTime.now();
     ingredients.insert(index.clamp(0, ingredients.length), ing);
     recomputeStock();
     notifyListeners();
@@ -1018,17 +1206,20 @@ class AppState extends ChangeNotifier {
     double shippingCost = 0,
   }) {
     final ing = byId(ingredientId)!;
+    final now = DateTime.now();
     final p = Purchase(
       id: newId(),
       ingredientId: ingredientId,
       ingredientName: ing.displayName,
-      at: DateTime.now(),
+      at: now,
       volumeMl: volumeMl,
       cost: cost,
       shippingCost: shippingCost,
+      // Retained for backward compatibility; undo no longer needs them.
       prevStockMl: ing.stockMl,
       prevCostPerMl: ing.costPerMl,
       prevAvgCostPerMl: ing.avgCostPerMl,
+      updatedAt: now,
     );
     purchases.insert(0, p);
     recomputeStock();
@@ -1042,7 +1233,8 @@ class AppState extends ChangeNotifier {
   bool undoPurchase(String purchaseId) {
     final i = purchases.indexWhere((e) => e.id == purchaseId);
     if (i < 0) return false;
-    purchases.removeAt(i);
+    final removed = purchases.removeAt(i);
+    _bury(RecordType.purchase, purchaseId, removed.ingredientName);
     recomputeStock();
     notifyListeners();
     _save();
@@ -1057,15 +1249,17 @@ class AppState extends ChangeNotifier {
     String note = '',
   }) {
     final ing = byId(ingredientId)!;
+    final now = DateTime.now();
     final a = StockAdjustment(
       id: newId(),
       ingredientId: ingredientId,
       ingredientName: ing.displayName,
-      at: DateTime.now(),
+      at: now,
       deltaMl: deltaMl,
       reason: reason,
       costPerMl: costPerMl,
       note: note,
+      updatedAt: now,
     );
     adjustments.insert(0, a);
     recomputeStock();
@@ -1093,7 +1287,8 @@ class AppState extends ChangeNotifier {
   bool removeAdjustment(String adjustmentId) {
     final i = adjustments.indexWhere((e) => e.id == adjustmentId);
     if (i < 0) return false;
-    adjustments.removeAt(i);
+    final removed = adjustments.removeAt(i);
+    _bury(RecordType.adjustment, adjustmentId, removed.ingredientName);
     recomputeStock();
     notifyListeners();
     _save();
@@ -1101,13 +1296,16 @@ class AppState extends ChangeNotifier {
   }
 
   void addRecipe(Recipe r) {
+    r.updatedAt = DateTime.now();
     recipes.add(r);
     notifyListeners();
     _save();
   }
 
   /// Replaces a recipe in place, keeping its position in the list.
+  /// Falls back to appending if the id is unknown.
   void updateRecipe(Recipe r) {
+    r.updatedAt = DateTime.now();
     final i = recipes.indexWhere((e) => e.id == r.id);
     if (i >= 0) {
       recipes[i] = r;
@@ -1140,6 +1338,7 @@ class AppState extends ChangeNotifier {
             percent: f.percent,
           ),
       ],
+      updatedAt: DateTime.now(),
     );
     recipes.insert(i + 1, copy);
     notifyListeners();
@@ -1147,31 +1346,36 @@ class AppState extends ChangeNotifier {
     return copy;
   }
 
+  /// Removes a recipe and returns it with its index so the caller can undo.
   (Recipe, int)? removeRecipe(String id) {
     final i = recipes.indexWhere((e) => e.id == id);
     if (i < 0) return null;
     final removed = recipes.removeAt(i);
+    _bury(RecordType.recipe, id, removed.name);
     notifyListeners();
     _save();
     return (removed, i);
   }
 
   void restoreRecipe(Recipe r, int index) {
+    _exhume(RecordType.recipe, r.id);
+    r.updatedAt = DateTime.now();
     recipes.insert(index.clamp(0, recipes.length), r);
     notifyListeners();
     _save();
   }
 
   void updateSettings(Settings s) {
+    s.updatedAt = DateTime.now();
     settings = s;
     notifyListeners();
     _save();
   }
 
   /// Records a mix. Stock is derived, so this appends a log entry and
-  /// replays — no in-place deduction, and no flooring at zero. A mix larger
-  /// than stock leaves a negative balance, which is surfaced rather than
-  /// silently absorbed.
+  /// replays — no in-place deduction, and no flooring at zero. A mix
+  /// larger than stock leaves a negative balance, which is surfaced rather
+  /// than silently absorbed.
   MixLog logMix(
     MixResult r, {
     String label = '',
@@ -1193,9 +1397,10 @@ class AppState extends ChangeNotifier {
         ),
     ];
 
+    final now = DateTime.now();
     final log = MixLog(
       id: newId(),
-      mixedAt: DateTime.now(),
+      mixedAt: now,
       label: label.trim().isEmpty ? 'Unnamed mix' : label.trim(),
       recipeId: recipeId,
       batchMl: r.totalMl,
@@ -1208,6 +1413,7 @@ class AppState extends ChangeNotifier {
       hardwareCost: hardwareCostFor(r.totalMl, settings),
       weighed: weighed,
       lines: lines,
+      updatedAt: now,
     );
     mixLog.insert(0, log);
     recomputeStock();
@@ -1219,7 +1425,8 @@ class AppState extends ChangeNotifier {
   bool undoMix(String logId) {
     final i = mixLog.indexWhere((e) => e.id == logId);
     if (i < 0) return false;
-    mixLog.removeAt(i);
+    final removed = mixLog.removeAt(i);
+    _bury(RecordType.mixLog, logId, removed.label);
     recomputeStock();
     notifyListeners();
     _save();
@@ -1227,11 +1434,12 @@ class AppState extends ChangeNotifier {
   }
 
   /// Under a ledger the entry *is* the deduction, so this is the same as
-  /// [undoMix]. Kept as a distinct name for call sites that read better.
+  /// [undoMix]. Kept as a distinct name for callers that read better this
+  /// way, but it no longer differs in effect.
   void deleteLogEntry(String logId) => undoMix(logId);
 
   /// Sets or clears the rating and tasting notes on a logged mix.
-  /// Stamps ratedAt so the steep time at tasting is recoverable.
+  /// Stamps [MixLog.ratedAt] so the steep time at tasting is recoverable.
   bool rateMix(
     String logId, {
     int? rating,
@@ -1245,6 +1453,7 @@ class AppState extends ChangeNotifier {
       clearRating: clearRating,
       tastingNotes: notes,
       ratedAt: DateTime.now(),
+      updatedAt: DateTime.now(),
     );
     notifyListeners();
     _save();
