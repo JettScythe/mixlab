@@ -52,7 +52,12 @@ class IngredientPickerField extends StatelessWidget {
     this.allowClear = true,
     this.trailing,
     this.emptyHint = 'No matching ingredients',
+    this.placeholder = 'Choose…',
   });
+
+  /// Shown when nothing is selected. The default reads as an instruction;
+  /// callers where "nothing" is a meaningful choice can say so instead.
+  final String placeholder;
 
   final String label;
   final List<Ingredient> items;
@@ -104,7 +109,7 @@ class IngredientPickerField extends StatelessWidget {
           children: [
             Expanded(
               child: Text(
-                sel?.displayName ?? 'Choose…',
+                sel?.displayName ?? placeholder,
                 overflow: TextOverflow.ellipsis,
                 style: sel == null ? TextStyle(color: theme.hintColor) : null,
               ),

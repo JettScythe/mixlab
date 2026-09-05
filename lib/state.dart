@@ -11,6 +11,7 @@ import 'package:mixlab/models/mix.dart';
 import 'package:mixlab/models/recipe.dart';
 import 'package:mixlab/models/settings.dart';
 import 'package:mixlab/models/units.dart';
+import 'package:mixlab/recipe_import.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/material.dart' show IconData, Icons;
 
@@ -63,7 +64,7 @@ class AppState extends ChangeNotifier {
   /// restored file cannot give two installs the same identity.
   static const _kDeviceId = 'device_id';
 
-  static const currentSchema = 11;
+  static const currentSchema = 12;
 
   static const _allKeys = [
     _kSchema,
@@ -431,6 +432,14 @@ class AppState extends ChangeNotifier {
       // needed — the bump stops an older build presenting the new
       // moving-average figures as if they were the old lifetime ones.
       v = 11;
+    }
+    if (v < 12) {
+      // v12 lets a recipe name the nicotine, PG and VG bottles it is mixed
+      // from. Existing recipes name none, which reads as "no preference"
+      // and falls back to the first of each kind — exactly what they did
+      // before, so no transform is needed. The bump stops an older build
+      // dropping the new ids on its next write.
+      v = 12;
     }
     await prefs.setInt(_kSchema, v);
   }
@@ -950,7 +959,7 @@ class AppState extends ChangeNotifier {
 
   /// Existing ingredient with the same brand + name, ignoring [exceptId].
   Ingredient? findDuplicate(String brand, String name, {String? exceptId}) {
-    final key = '${brand.trim().toLowerCase()}|${name.trim().toLowerCase()}';
+    final key = Ingredient.dedupKeyFor(brand, name);
     for (final e in ingredients) {
       if (e.id == exceptId) continue;
       if (e.dedupKey == key) return e;
@@ -1085,6 +1094,57 @@ class AppState extends ChangeNotifier {
     );
   }
 
+  /// The bottle a recipe wants for [kind], or the first of that kind when
+  /// it expresses no preference.
+  ///
+  /// A recipe's stored base may have been deleted since, so the fallback
+  /// also covers a dangling id — better to mix with something than to
+  /// silently drop the nicotine.
+  Ingredient? baseFor(Recipe r, IngredientKind kind) {
+    final wanted = switch (kind) {
+      IngredientKind.nicotine => r.nicId,
+      IngredientKind.pg => r.pgId,
+      IngredientKind.vg => r.vgId,
+      _ => null,
+    };
+    final chosen = byId(wanted);
+    if (chosen != null && chosen.kind == kind) return chosen;
+    return firstOfKind(kind);
+  }
+
+  /// Renders [r] as shareable plain text, resolving ingredient and base
+  /// names against the current inventory so the output reads in bottles
+  /// rather than ids.
+  String recipeAsText(Recipe r) {
+    String? named(String? id, IngredientKind kind) {
+      final e = byId(id);
+      return e != null && e.kind == kind ? e.displayName : null;
+    }
+
+    return recipeToText(
+      r,
+      nameOf: (id) => byId(id)?.displayName ?? '',
+      nicBaseName: named(r.nicId, IngredientKind.nicotine),
+      pgName: named(r.pgId, IngredientKind.pg),
+      vgName: named(r.vgId, IngredientKind.vg),
+    );
+  }
+
+  /// True when [r] names a base that no longer exists, so mixing it would
+  /// quietly substitute a different bottle.
+  bool hasMissingBase(Recipe r) {
+    for (final (id, kind) in [
+      (r.nicId, IngredientKind.nicotine),
+      (r.pgId, IngredientKind.pg),
+      (r.vgId, IngredientKind.vg),
+    ]) {
+      if (id == null) continue;
+      final e = byId(id);
+      if (e == null || e.kind != kind) return true;
+    }
+    return false;
+  }
+
   /// Largest batch of [r] mixable from current stock, or null if unlimited.
   /// Computed at the recipe's own batch size and scaled.
   double? capacityFor(Recipe r) {
@@ -1096,9 +1156,9 @@ class AppState extends ChangeNotifier {
       settings: settings,
       percentMode: r.percentMode,
       baseMode: r.baseMode,
-      nic: firstOfKind(IngredientKind.nicotine),
-      pg: firstOfKind(IngredientKind.pg),
-      vg: firstOfKind(IngredientKind.vg),
+      nic: baseFor(r, IngredientKind.nicotine),
+      pg: baseFor(r, IngredientKind.pg),
+      vg: baseFor(r, IngredientKind.vg),
       flavors: [
         for (final f in r.flavors)
           if (byId(f.ingredientId) != null) (byId(f.ingredientId)!, f.percent),

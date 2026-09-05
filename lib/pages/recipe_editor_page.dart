@@ -46,6 +46,10 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
   late BaseMode _baseMode;
   late String _initialSnapshot;
 
+  /// Bottles this recipe is mixed from. Null means "whatever is selected
+  /// at mix time", which is how every recipe behaved before v12.
+  String? _nicId, _pgId, _vgId;
+
   AppState get s => widget.state;
   bool get _isNew => widget.existing == null;
 
@@ -66,6 +70,9 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
     );
     _percentMode = e?.percentMode ?? set.defaultPercentMode;
     _baseMode = e?.baseMode ?? BaseMode.ratio;
+    _nicId = e?.nicId;
+    _pgId = e?.pgId;
+    _vgId = e?.vgId;
 
     if (e != null) {
       for (final f in e.flavors) {
@@ -125,6 +132,9 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
     targetVgPercent: _val(_vg),
     percentMode: _percentMode,
     baseMode: _baseMode,
+    nicId: _nicId,
+    pgId: _pgId,
+    vgId: _vgId,
     flavors: [
       for (final r in _rows)
         if (s.byId(r.ingredientId) != null && _val(r.percent) > 0)
@@ -333,6 +343,70 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
                 ),
               ),
             ),
+            const SizedBox(height: 16),
+
+            Text('Bases', style: theme.textTheme.titleSmall),
+            const SizedBox(height: 2),
+            Text(
+              'Which bottles this recipe is mixed from. Leave any unset to '
+              'use whatever is selected at mix time.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.outline,
+              ),
+            ),
+            const SizedBox(height: 8),
+            IngredientPickerField(
+              label: 'Nicotine base',
+              placeholder: 'Any — use current selection',
+              items: s.ofKind(IngredientKind.nicotine),
+              selectedId: _nicId,
+              settings: s.settings,
+              state: s,
+              createKind: IngredientKind.nicotine,
+              emptyHint: 'No nicotine bases yet — search a name and create it',
+              onSelected: (id) => setState(() => _nicId = id),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: IngredientPickerField(
+                    label: 'PG source',
+                    placeholder: 'Any',
+                    items: s.ofKind(IngredientKind.pg),
+                    selectedId: _pgId,
+                    settings: s.settings,
+                    state: s,
+                    createKind: IngredientKind.pg,
+                    emptyHint: 'No PG in inventory',
+                    onSelected: (id) => setState(() => _pgId = id),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: IngredientPickerField(
+                    label: 'VG source',
+                    placeholder: 'Any',
+                    items: s.ofKind(IngredientKind.vg),
+                    selectedId: _vgId,
+                    settings: s.settings,
+                    state: s,
+                    createKind: IngredientKind.vg,
+                    emptyHint: 'No VG in inventory',
+                    onSelected: (id) => setState(() => _vgId = id),
+                  ),
+                ),
+              ],
+            ),
+            if (s.hasMissingBase(_build('check')))
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  'A base this recipe named is no longer in your inventory. '
+                  'Pick another, or clear it to use the current selection.',
+                  style: TextStyle(color: theme.colorScheme.error),
+                ),
+              ),
             const SizedBox(height: 16),
 
             Text('Percentages are', style: theme.textTheme.titleSmall),
@@ -587,9 +661,9 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
       settings: set,
       percentMode: _percentMode,
       baseMode: _baseMode,
-      nic: s.firstOfKind(IngredientKind.nicotine),
-      pg: s.firstOfKind(IngredientKind.pg),
-      vg: s.firstOfKind(IngredientKind.vg),
+      nic: s.baseFor(draft, IngredientKind.nicotine),
+      pg: s.baseFor(draft, IngredientKind.pg),
+      vg: s.baseFor(draft, IngredientKind.vg),
       flavors: flavors,
     );
     final issues = checkStock(result, s.ingredients);
@@ -623,7 +697,8 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
               ],
             ),
             Text(
-              'At ${_fmt(draft.batchMl)} mL, using your default bases.',
+              'At ${_fmt(draft.batchMl)} mL, using '
+              '${_nicId == null && _pgId == null && _vgId == null ? 'your default bases' : 'this recipe\'s bases'}.',
               style: theme.textTheme.bodySmall,
             ),
             const SizedBox(height: 12),

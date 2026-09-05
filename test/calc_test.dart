@@ -2091,6 +2091,345 @@ void main() {
     });
   });
 
+  group('recipe stores its bases', () {
+    AppState withBases() {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      s.ingredients.addAll([
+        Ingredient(
+          id: 'nic-pg',
+          name: 'Nic 100 (PG)',
+          kind: IngredientKind.nicotine,
+          density: 1.036,
+          nicStrength: 100,
+        ),
+        Ingredient(
+          id: 'nic-vg',
+          name: 'Nic 250 (VG)',
+          kind: IngredientKind.nicotine,
+          density: 1.261,
+          nicStrength: 250,
+          carrierVg: 1,
+        ),
+        Ingredient(
+          id: 'pg',
+          name: 'PG',
+          kind: IngredientKind.pg,
+          density: 1.036,
+        ),
+        Ingredient(
+          id: 'vg',
+          name: 'VG',
+          kind: IngredientKind.vg,
+          density: 1.261,
+        ),
+      ]);
+      return s;
+    }
+
+    test('an unpinned recipe still uses the first of each kind', () {
+      final s = withBases();
+      final r = Recipe(id: 'r', name: 'R');
+      expect(s.baseFor(r, IngredientKind.nicotine)!.id, 'nic-pg');
+      expect(s.baseFor(r, IngredientKind.pg)!.id, 'pg');
+      expect(s.baseFor(r, IngredientKind.vg)!.id, 'vg');
+      expect(s.hasMissingBase(r), isFalse);
+    });
+
+    test('a pinned base is used instead of the first', () {
+      final s = withBases();
+      final r = Recipe(id: 'r', name: 'R', nicId: 'nic-vg');
+      expect(s.baseFor(r, IngredientKind.nicotine)!.id, 'nic-vg');
+    });
+
+    test('which base is pinned changes the mix', () {
+      // The bug this closes: a recipe recorded 3 mg/mL and nothing else,
+      // so it silently mixed with whatever base happened to be selected.
+      // A 100 mg/mL PG base and a 250 mg/mL VG base are not interchangeable.
+      final s = withBases();
+      MixResult mix(Recipe r, {BaseMode base = BaseMode.ratio}) => calculateMix(
+        amountMl: 100,
+        targetNic: r.targetNic,
+        targetVgPercent: r.targetVgPercent,
+        settings: s.settings,
+        baseMode: base,
+        nic: s.baseFor(r, IngredientKind.nicotine),
+        pg: s.baseFor(r, IngredientKind.pg),
+        vg: s.baseFor(r, IngredientKind.vg),
+      );
+
+      final weakR = Recipe(id: 'a', name: 'A', nicId: 'nic-pg');
+      final strongR = Recipe(id: 'b', name: 'B', nicId: 'nic-vg');
+      final weak = mix(weakR);
+      final strong = mix(strongR);
+
+      // 3 mL of a 100 mg/mL base versus 1.2 mL of a 250 mg/mL one — a
+      // different bottle drawn down by a different amount.
+      expect(
+        weak.lines.firstWhere((l) => l.ingredientId == 'nic-pg').ml,
+        closeTo(3, 1e-9),
+      );
+      expect(
+        strong.lines.firstWhere((l) => l.ingredientId == 'nic-vg').ml,
+        closeTo(1.2, 1e-9),
+      );
+
+      // In ratio mode the calculator carves the carrier out of the target,
+      // so both still land on 3 mg and 70% VG. That is by design.
+      for (final r in [weak, strong]) {
+        expect(r.actualNicMgPerMl, closeTo(3, 1e-9));
+        expect(r.actualVgPercent, closeTo(70, 1e-9));
+      }
+
+      // Max VG has no neat PG to absorb the difference, so the carrier the
+      // base drags in lands directly on the finished ratio.
+      expect(
+        mix(weakR, base: BaseMode.maxVg).actualVgPercent,
+        closeTo(97, 1e-9),
+      );
+      expect(
+        mix(strongR, base: BaseMode.maxVg).actualVgPercent,
+        closeTo(100, 1e-9),
+      );
+    });
+
+    test('a deleted base falls back rather than dropping the nicotine', () {
+      final s = withBases();
+      final r = Recipe(id: 'r', name: 'R', nicId: 'nic-vg');
+      s.removeIngredient('nic-vg');
+
+      expect(s.hasMissingBase(r), isTrue);
+      // Falls back rather than returning null — mixing with the wrong base
+      // is recoverable, silently mixing 0 mg is not.
+      expect(s.baseFor(r, IngredientKind.nicotine)!.id, 'nic-pg');
+    });
+
+    test('an id of the wrong kind is refused', () {
+      final s = withBases();
+      // A PG bottle pinned as the nicotine base would otherwise mix 0 mg.
+      final r = Recipe(id: 'r', name: 'R', nicId: 'pg');
+      expect(s.hasMissingBase(r), isTrue);
+      expect(s.baseFor(r, IngredientKind.nicotine)!.id, 'nic-pg');
+    });
+
+    test('bases round-trip and default to null for old recipes', () {
+      final r = Recipe(
+        id: 'r',
+        name: 'R',
+        nicId: 'nic-vg',
+        pgId: 'pg',
+        vgId: 'vg',
+      );
+      final back = Recipe.fromJson(
+        jsonDecode(jsonEncode(r.toJson())) as Map<String, dynamic>,
+      );
+      expect(back.nicId, 'nic-vg');
+      expect(back.pgId, 'pg');
+      expect(back.vgId, 'vg');
+
+      // A pre-v12 recipe has no such keys, which reads as no preference.
+      final old = Recipe.fromJson({'id': 'o', 'name': 'Old'});
+      expect(old.nicId, isNull);
+      expect(old.pgId, isNull);
+      expect(old.vgId, isNull);
+    });
+
+    test('capacity is computed against the pinned base', () {
+      final s = withBases();
+      // Plenty of everything except the strong base, of which there is
+      // barely any.
+      for (final (id, ml) in [
+        ('nic-pg', 500.0),
+        ('nic-vg', 1.0),
+        ('pg', 1000.0),
+        ('vg', 1000.0),
+      ]) {
+        s.addAdjustment(
+          ingredientId: id,
+          deltaMl: ml,
+          reason: AdjustReason.opening,
+        );
+      }
+
+      final pinned = Recipe(id: 'a', name: 'A', batchMl: 100, nicId: 'nic-vg');
+      final unpinned = Recipe(id: 'b', name: 'B', batchMl: 100);
+
+      // At 3 mg, 1 mL of a 250 mg/mL base makes ~83 mL. The weak base is
+      // not the constraint at all, so the unpinned recipe is limited only
+      // by the 1000 mL of PG/VG.
+      expect(s.capacityFor(pinned)!, closeTo(1 / 1.2 * 100, 1e-6));
+      expect(s.capacityFor(unpinned)!, greaterThan(1000));
+    });
+
+    test('a v11 store migrates to v12 without touching its recipes', () async {
+      SharedPreferences.setMockInitialValues({
+        'schema_version': 11,
+        'ingredients_v1': jsonEncode(<Object>[]),
+        'recipes_v1': jsonEncode([
+          {
+            'id': 'r1',
+            'name': 'Old recipe',
+            'batchMl': 30,
+            'targetNic': 3,
+            'targetVgPercent': 70,
+            'flavors': <Object>[],
+          },
+        ]),
+      });
+
+      final s = AppState();
+      await waitReady(s);
+      expect(s.loadError, isNull);
+
+      final r = s.recipeById('r1')!;
+      expect(r.nicId, isNull);
+      expect(r.targetNic, 3);
+      expect(r.targetVgPercent, 70);
+
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getInt('schema_version'), 12);
+    });
+  });
+
+  group('recipe as shareable text', () {
+    AppState stocked() {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      s.ingredients.addAll([
+        Ingredient(
+          id: 'sb',
+          name: 'Strawberry (Ripe)',
+          brand: 'TFA',
+          kind: IngredientKind.flavor,
+          density: 1.036,
+        ),
+        Ingredient(
+          id: 'vbic',
+          name: 'Vanilla Bean Ice Cream',
+          brand: 'TFA',
+          kind: IngredientKind.flavor,
+          density: 1.036,
+        ),
+      ]);
+      return s;
+    }
+
+    Recipe sample() => Recipe(
+      id: 'r',
+      name: 'Mustard Milk',
+      notes: 'Shake and vape.',
+      batchMl: 30,
+      targetNic: 3,
+      targetVgPercent: 70,
+      flavors: [
+        RecipeFlavor(
+          ingredientId: 'sb',
+          name: 'TFA Strawberry (Ripe)',
+          percent: 8,
+        ),
+        RecipeFlavor(
+          ingredientId: 'vbic',
+          name: 'TFA Vanilla Bean Ice Cream',
+          percent: 6,
+        ),
+      ],
+    );
+
+    test('renders percentages, bases and notes', () {
+      final text = stocked().recipeAsText(sample());
+      expect(text, contains('Mustard Milk'));
+      expect(text, contains('8% TFA Strawberry (Ripe)'));
+      expect(text, contains('6% TFA Vanilla Bean Ice Cream'));
+      expect(text, contains('30ml'));
+      expect(text, contains('70/30 VG/PG'));
+      expect(text, contains('3mg'));
+      expect(text, contains('Shake and vape.'));
+    });
+
+    test('round-trips back through the parser', () {
+      // The whole point of emitting this dialect: what MixLab shares,
+      // MixLab can read.
+      final s = stocked();
+      final parsed = parseRecipeText(s.recipeAsText(sample()));
+
+      expect(parsed.batchMl, 30);
+      expect(parsed.nic, 3);
+      expect(parsed.vgPercent, 70);
+      expect(parsed.lines.length, 2);
+      expect(parsed.name, 'Mustard Milk');
+
+      // And the ingredients resolve back to the same bottles.
+      expect(matchParsedLine(parsed.lines[0], s.ingredients)?.id, 'sb');
+      expect(matchParsedLine(parsed.lines[1], s.ingredients)?.id, 'vbic');
+      expect(parsed.lines[0].percent, 8);
+      expect(parsed.lines[1].percent, 6);
+    });
+
+    test('max VG survives the round trip', () {
+      final s = stocked();
+      final r = sample()..baseMode = BaseMode.maxVg;
+      final text = s.recipeAsText(r);
+      expect(text, contains('Max VG'));
+      expect(parseRecipeText(text).maxVg, isTrue);
+    });
+
+    test('by-weight recipes say so', () {
+      final s = stocked();
+      final r = sample()..percentMode = PercentMode.byWeight;
+      expect(s.recipeAsText(r), contains('by weight'));
+      // A by-volume recipe stays silent rather than claiming a default.
+      expect(s.recipeAsText(sample()), isNot(contains('by weight')));
+    });
+
+    test('named bases appear as a human note, not as ids', () {
+      final s = stocked();
+      s.ingredients.add(
+        Ingredient(
+          id: 'nic-vg',
+          name: 'Nic 250 (VG)',
+          kind: IngredientKind.nicotine,
+          density: 1.261,
+          nicStrength: 250,
+        ),
+      );
+      final text = s.recipeAsText(sample()..nicId = 'nic-vg');
+      expect(text, contains('Nic 250 (VG)'));
+      expect(text, isNot(contains('nic-vg')));
+    });
+
+    test('fractional percentages keep their precision', () {
+      final s = stocked();
+      final r = Recipe(
+        id: 'r',
+        name: 'Fiddly',
+        flavors: [
+          RecipeFlavor(
+            ingredientId: 'sb',
+            name: 'TFA Strawberry (Ripe)',
+            percent: 0.25,
+          ),
+        ],
+      );
+      final text = s.recipeAsText(r);
+      expect(text, contains('0.25%'));
+      expect(parseRecipeText(text).lines.single.percent, closeTo(0.25, 1e-9));
+    });
+
+    test('a base-only recipe still renders', () {
+      final s = stocked();
+      final text = s.recipeAsText(Recipe(id: 'r', name: 'Just base'));
+      expect(text, contains('Just base'));
+      expect(text, contains('base only'));
+    });
+
+    test('names come from inventory, so a rename is picked up', () {
+      final s = stocked();
+      s.byId('sb')!.name = 'Strawberry Ripe (renamed)';
+      // The recipe still carries the old label; inventory wins.
+      expect(s.recipeAsText(sample()), contains('renamed'));
+    });
+  });
+
   group('recipe text import', () {
     test('percent-prefix with brand shorthand', () {
       final p = parseRecipeText('''
@@ -2848,6 +3187,224 @@ some line with no numbers at all
       );
       expect(a.byId('z')!.brand, 'CAP');
       expect(a.byId('z')!.name, 'Sweet Cream');
+    });
+  });
+
+  group('merge deduplicates ingredients by name', () {
+    (AppState, AppState) twoDevices() {
+      SharedPreferences.setMockInitialValues({});
+      return (
+        AppState(autoLoad: false)..deviceId = 'aaa',
+        AppState(autoLoad: false)..deviceId = 'bbb',
+      );
+    }
+
+    /// The same bottle typed into two installs, so each minted its own id.
+    Ingredient typed(AppState s, String id, String brand, String name) {
+      final e = Ingredient(
+        id: id,
+        name: name,
+        brand: brand,
+        kind: IngredientKind.flavor,
+        density: 1.036,
+        updatedAt: DateTime(2026, 1, 1),
+      );
+      s.ingredients.add(e);
+      return e;
+    }
+
+    test('the same bottle under two ids becomes one ingredient', () async {
+      final (a, b) = twoDevices();
+      typed(a, 'local-1', 'TFA', 'Strawberry (Ripe)');
+      typed(b, 'remote-9', 'TFA', 'Strawberry (Ripe)');
+
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.matchedByName, 1);
+      // No add proposed: it is not a new bottle, it is the same one.
+      expect(plan.ofType(RecordType.ingredient), isEmpty);
+
+      await a.applyMerge(plan);
+      expect(a.ingredients.length, 1);
+      expect(a.byId('local-1'), isNotNull);
+      expect(a.byId('remote-9'), isNull);
+    });
+
+    test('matching ignores case and surrounding whitespace', () async {
+      final (a, b) = twoDevices();
+      typed(a, 'local-1', 'TFA', 'Strawberry (Ripe)');
+      typed(b, 'remote-9', '  tfa ', ' STRAWBERRY (RIPE)  ');
+
+      await a.applyMerge(a.previewMerge(b.exportJson()));
+      expect(a.ingredients.length, 1);
+    });
+
+    test('a genuinely different bottle is still added', () async {
+      final (a, b) = twoDevices();
+      typed(a, 'local-1', 'TFA', 'Strawberry (Ripe)');
+      typed(b, 'remote-9', 'CAP', 'Sweet Cream');
+
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.matchedByName, 0);
+      expect(plan.countOf(MergeAction.add), 1);
+
+      await a.applyMerge(plan);
+      expect(a.ingredients.length, 2);
+    });
+
+    test('the same brand with a different flavor is not merged', () async {
+      final (a, b) = twoDevices();
+      typed(a, 'local-1', 'TFA', 'Strawberry (Ripe)');
+      typed(b, 'remote-9', 'TFA', 'Vanilla Bean Ice Cream');
+
+      await a.applyMerge(a.previewMerge(b.exportJson()));
+      expect(a.ingredients.length, 2);
+    });
+
+    test('their stock lands on our copy, not a duplicate', () async {
+      final (a, b) = twoDevices();
+      typed(a, 'local-1', 'TFA', 'Strawberry (Ripe)');
+      typed(b, 'remote-9', 'TFA', 'Strawberry (Ripe)');
+      a.addAdjustment(
+        ingredientId: 'local-1',
+        deltaMl: 30,
+        reason: AdjustReason.opening,
+      );
+      b.addAdjustment(
+        ingredientId: 'remote-9',
+        deltaMl: 20,
+        reason: AdjustReason.opening,
+      );
+
+      await a.applyMerge(a.previewMerge(b.exportJson()));
+
+      // Both ledger events survive, both pointing at the surviving record.
+      expect(a.ingredients.length, 1);
+      expect(a.byId('local-1')!.stockMl, closeTo(50, 1e-9));
+      expect(
+        a.adjustments.every((x) => x.ingredientId == 'local-1'),
+        isTrue,
+        reason: 'an adjustment still pointing at the remote id is orphaned',
+      );
+    });
+
+    test('their recipes point at our ingredient', () async {
+      final (a, b) = twoDevices();
+      typed(a, 'local-1', 'TFA', 'Strawberry (Ripe)');
+      typed(b, 'remote-9', 'TFA', 'Strawberry (Ripe)');
+      b.recipes.add(
+        Recipe(
+          id: 'r1',
+          name: 'Theirs',
+          flavors: [
+            RecipeFlavor(
+              ingredientId: 'remote-9',
+              name: 'TFA Strawberry (Ripe)',
+              percent: 8,
+            ),
+          ],
+        )..updatedAt = DateTime(2026, 2, 1),
+      );
+
+      await a.applyMerge(a.previewMerge(b.exportJson()));
+
+      final r = a.recipeById('r1')!;
+      expect(r.flavors.single.ingredientId, 'local-1');
+      // Resolvable, so the recipe is mixable rather than showing a gap.
+      expect(a.byId(r.flavors.single.ingredientId), isNotNull);
+    });
+
+    test('their mix log lines point at our ingredient', () async {
+      final (a, b) = twoDevices();
+      typed(a, 'local-1', 'TFA', 'Strawberry (Ripe)');
+      typed(b, 'remote-9', 'TFA', 'Strawberry (Ripe)');
+      a.addAdjustment(
+        ingredientId: 'local-1',
+        deltaMl: 100,
+        reason: AdjustReason.opening,
+      );
+      b.addAdjustment(
+        ingredientId: 'remote-9',
+        deltaMl: 100,
+        reason: AdjustReason.opening,
+      );
+      b.logMix(
+        calculateMix(
+          amountMl: 100,
+          targetNic: 0,
+          targetVgPercent: 50,
+          settings: b.settings,
+          flavors: [(b.byId('remote-9')!, 10)],
+        ),
+        label: 'On B',
+      );
+
+      await a.applyMerge(a.previewMerge(b.exportJson()));
+
+      // 100 + 100 opening, minus the 10 mL their mix drew.
+      expect(a.byId('local-1')!.stockMl, closeTo(190, 1e-9));
+      expect(
+        a.mixLog.single.lines.any((l) => l.ingredientId == 'remote-9'),
+        isFalse,
+      );
+    });
+
+    test('an id present on both sides is never re-matched', () async {
+      // A rename must stay a rename. If the ids agree they are the same
+      // record by definition, whatever the names now say.
+      final (a, b) = twoDevices();
+      typed(a, 'shared', 'TFA', 'Old Name');
+      typed(a, 'other', 'CAP', 'Sweet Cream');
+      typed(b, 'shared', 'CAP', 'Sweet Cream').updatedAt = DateTime(2026, 6, 1);
+
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.matchedByName, 0);
+      await a.applyMerge(plan);
+
+      expect(a.ingredients.length, 2);
+      expect(a.byId('shared')!.name, 'Sweet Cream');
+      expect(a.byId('other'), isNotNull);
+    });
+
+    test('two remote duplicates cannot both claim one local record', () async {
+      final (a, b) = twoDevices();
+      typed(a, 'local-1', 'TFA', 'Strawberry (Ripe)');
+      typed(b, 'remote-9', 'TFA', 'Strawberry (Ripe)');
+      typed(b, 'remote-8', 'TFA', 'Strawberry (Ripe)');
+
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.matchedByName, 1);
+      await a.applyMerge(plan);
+
+      // One aliased onto ours; the other arrives as its own record rather
+      // than silently overwriting the first.
+      expect(a.ingredients.length, 2);
+      expect(a.byId('local-1'), isNotNull);
+    });
+
+    test('merging twice is still a no-op the second time', () async {
+      final (a, b) = twoDevices();
+      typed(a, 'local-1', 'TFA', 'Strawberry (Ripe)');
+      typed(b, 'remote-9', 'TFA', 'Strawberry (Ripe)');
+      b.addAdjustment(
+        ingredientId: 'remote-9',
+        deltaMl: 20,
+        reason: AdjustReason.opening,
+      );
+
+      final dump = b.exportJson();
+      await a.applyMerge(a.previewMerge(dump));
+      final stock = a.byId('local-1')!.stockMl;
+
+      await a.applyMerge(a.previewMerge(dump));
+      expect(a.ingredients.length, 1);
+      expect(a.byId('local-1')!.stockMl, closeTo(stock, 1e-9));
+    });
+
+    test('a nameless ingredient is not matched to another nameless one', () {
+      final (a, b) = twoDevices();
+      typed(a, 'local-1', '', '');
+      typed(b, 'remote-9', '', '');
+      expect(a.previewMerge(b.exportJson()).matchedByName, 0);
     });
   });
 
