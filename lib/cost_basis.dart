@@ -7,22 +7,16 @@ class CostDraw {
   CostDraw({
     required this.volumeMl,
     required this.cost,
-    required this.layers,
     required this.shortfallMl,
   });
 
   final double volumeMl;
   final double cost;
 
-  /// How many distinct price layers were consumed. Always 1 under moving
-  /// average; more than 1 under FIFO means the draw spanned a price change.
-  final int layers;
-
   /// Volume drawn beyond what the ledger held, priced at the last known
   /// rate.
   final double shortfallMl;
 
-  double get costPerMl => volumeMl > 0 ? cost / volumeMl : 0;
   bool get estimated => shortfallMl > 1e-9;
 }
 
@@ -67,18 +61,34 @@ class _Book {
   /// Volume withdrawn beyond what was available.
   double deficitMl = 0;
 
+  /// Rate the outstanding deficit was actually charged out at. Held
+  /// separately from [lastRate] because a later purchase at a new price
+  /// must not retroactively re-value liquid already charged to a mix.
+  /// Volume-weighted when deficits accrue at different rates.
+  double deficitRate = 0;
+
   void add(double ml, double rate) {
     if (ml <= 0) return;
-    if (rate > 0) lastRate = rate;
 
     // An addition first cancels any deficit — that liquid was already
-    // charged out at lastRate when it was withdrawn.
+    // charged out at deficitRate when it was withdrawn. Settle that at the
+    // old rate *before* adopting the new one, or the unpaid remainder gets
+    // valued at a price it was never charged at.
     if (deficitMl > 0) {
       final payback = ml < deficitMl ? ml : deficitMl;
       deficitMl -= payback;
       ml -= payback;
-      if (ml <= 1e-12) return;
+      if (deficitMl <= 1e-12) {
+        deficitMl = 0;
+        deficitRate = 0;
+      }
+      if (ml <= 1e-12) {
+        if (rate > 0) lastRate = rate;
+        return;
+      }
     }
+
+    if (rate > 0) lastRate = rate;
 
     layers.add(_Layer(ml, rate));
 
@@ -97,11 +107,10 @@ class _Book {
 
   CostDraw draw(double ml) {
     if (ml <= 0) {
-      return CostDraw(volumeMl: 0, cost: 0, layers: 0, shortfallMl: 0);
+      return CostDraw(volumeMl: 0, cost: 0, shortfallMl: 0);
     }
     var need = ml;
     var cost = 0.0;
-    var used = 0;
 
     while (need > 1e-12 && layers.isNotEmpty) {
       final l = layers.first;
@@ -109,24 +118,22 @@ class _Book {
       cost += take * l.costPerMl;
       l.volumeMl -= take;
       need -= take;
-      used++;
       if (l.volumeMl <= 1e-12) layers.removeAt(0);
     }
 
     var shortfall = 0.0;
     if (need > 1e-12) {
-      // Nothing left to draw from. Assume the last price we knew.
+      // Nothing left to draw from. Assume the last price we knew, and
+      // remember it — the deficit stays valued at what it was charged.
       cost += need * lastRate;
+      deficitRate = deficitMl > 0
+          ? (deficitMl * deficitRate + need * lastRate) / (deficitMl + need)
+          : lastRate;
       deficitMl += need;
       shortfall = need;
     }
 
-    return CostDraw(
-      volumeMl: ml,
-      cost: cost,
-      layers: used,
-      shortfallMl: shortfall,
-    );
+    return CostDraw(volumeMl: ml, cost: cost, shortfallMl: shortfall);
   }
 
   double get volumeMl {
@@ -142,9 +149,11 @@ class _Book {
     for (final l in layers) {
       c += l.volumeMl * l.costPerMl;
     }
-    // A deficit carries negative value at the assumed rate, so value and
-    // volume stay consistent with each other.
-    return c - deficitMl * lastRate;
+    // A deficit carries negative value at the rate it was charged out at,
+    // so value and volume stay consistent with each other. Using the
+    // current rate instead would move the value of stock already spent
+    // every time you restock at a new price.
+    return c - deficitMl * deficitRate;
   }
 
   double get basisPerMl {

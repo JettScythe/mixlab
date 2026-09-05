@@ -368,10 +368,22 @@ class AppState extends ChangeNotifier {
           }
         }
 
+        // Adjustments are written before the schema stamp below, so a
+        // crash between the two leaves v at 8 and re-runs this block. The
+        // opening id is deterministic, so skipping ids already present
+        // makes the migration re-entrant — without this, a second pass
+        // appends a duplicate and derived stock doubles.
+        final existingAdjustments = decode(prefs.getString(_kAdjustments));
+        final alreadyOpened = {
+          for (final a in existingAdjustments)
+            if (a['id'] is String) a['id'] as String,
+        };
+
         final now = DateTime.now().toIso8601String();
         final opening = <Map<String, dynamic>>[];
         for (final j in ings) {
           final id = j['id'] as String;
+          if (alreadyOpened.contains('opening-$id')) continue;
           final current = (j['stockMl'] as num?)?.toDouble() ?? 0;
           final delta = current - (replayed[id] ?? 0);
           if (delta.abs() < 1e-9) continue;
@@ -395,9 +407,10 @@ class AppState extends ChangeNotifier {
         }
 
         if (opening.isNotEmpty) {
-          final existing = decode(prefs.getString(_kAdjustments))
-            ..addAll(opening);
-          await prefs.setString(_kAdjustments, jsonEncode(existing));
+          await prefs.setString(
+            _kAdjustments,
+            jsonEncode(existingAdjustments..addAll(opening)),
+          );
           debugPrint('Wrote ${opening.length} opening balances (v9).');
         }
       }
@@ -632,6 +645,16 @@ class AppState extends ChangeNotifier {
   Future<String> applyMerge(MergePlan plan) async {
     var added = 0, updated = 0, deleted = 0;
 
+    // Deletions the user declined. Their tombstones are held back below,
+    // or this device would keep the record while telling every other
+    // device to drop it — and never be able to sync it back, because the
+    // tombstone would out-rank the record forever.
+    final declinedDeletes = <String>{
+      for (final i in plan.items)
+        if (i.action == MergeAction.delete && !i.accept)
+          '${i.type.index}:${i.id}',
+    };
+
     for (final item in plan.items) {
       if (!item.accept) continue;
       switch (item.action) {
@@ -678,10 +701,25 @@ class AppState extends ChangeNotifier {
               } else {
                 mixLog.add(r);
               }
+            // Ledger events are append-only, but the same plan can be
+            // applied twice. Without an id check that silently doubles
+            // stock, which no later replay can undo.
             case RecordType.purchase:
-              purchases.add(item.incoming! as Purchase);
+              final r = item.incoming! as Purchase;
+              final i = purchases.indexWhere((e) => e.id == r.id);
+              if (i >= 0) {
+                purchases[i] = r;
+              } else {
+                purchases.add(r);
+              }
             case RecordType.adjustment:
-              adjustments.add(item.incoming! as StockAdjustment);
+              final r = item.incoming! as StockAdjustment;
+              final i = adjustments.indexWhere((e) => e.id == r.id);
+              if (i >= 0) {
+                adjustments[i] = r;
+              } else {
+                adjustments.add(r);
+              }
           }
           if (isAdd) {
             added++;
@@ -696,8 +734,11 @@ class AppState extends ChangeNotifier {
     }
 
     // Fold in their tombstones so this device stops re-offering records
-    // the other side already deleted.
+    // the other side already deleted. A tombstone whose deletion the user
+    // declined is skipped: keeping the record and its grave together is
+    // what makes the decline stick on the next merge in either direction.
     for (final t in plan.tombstones) {
+      if (declinedDeletes.contains(t.key)) continue;
       final existing = tombstones.indexWhere((x) => x.key == t.key);
       if (existing < 0) {
         tombstones.add(t);
@@ -1118,6 +1159,39 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  /// Cost basis [ingredientId] would have if a purchase of [volumeMl] at
+  /// [cost] plus [shippingCost] were recorded now.
+  ///
+  /// Replays the real ledger with the pending purchase appended rather
+  /// than blending by hand, so the preview matches whatever the configured
+  /// [CostBasis] will actually do. Under FIFO a hand-rolled weighted
+  /// average can be far off — the new liquid may sit behind older, cheaper
+  /// layers that get consumed first.
+  double previewRestockBasis({
+    required String ingredientId,
+    required double volumeMl,
+    required double cost,
+    double shippingCost = 0,
+  }) {
+    if (volumeMl <= 0) return byId(ingredientId)?.costPerMl ?? 0;
+    final speculative = Purchase(
+      id: 'preview',
+      ingredientId: ingredientId,
+      ingredientName: '',
+      at: DateTime.now(),
+      volumeMl: volumeMl,
+      cost: cost,
+      shippingCost: shippingCost,
+    );
+    final replay = replayCosts(
+      purchases: [...purchases, speculative],
+      adjustments: adjustments,
+      mixLog: mixLog,
+      basis: settings.costBasis,
+    );
+    return replay.basisPerMl[ingredientId] ?? 0;
+  }
+
   /// Full ledger for one ingredient, oldest first, with running balance.
   List<StockLedgerEntry> ledgerFor(String ingredientId) {
     final raw = <(DateTime, double, String, IconData, String, String?, bool)>[];
@@ -1243,15 +1317,35 @@ class AppState extends ChangeNotifier {
     _save();
   }
 
+  /// Resolves an ingredient for a ledger write, or explains why it cannot.
+  ///
+  /// A stale id reaches here when a page outlives the ingredient it was
+  /// opened for — deletion is undoable, so the gap is real. A named error
+  /// beats a bare null-check crash outside the load/save safety nets.
+  Ingredient _requireIngredient(String ingredientId, String action) {
+    final ing = byId(ingredientId);
+    if (ing == null) {
+      throw ArgumentError.value(
+        ingredientId,
+        'ingredientId',
+        'Cannot $action: no such ingredient. It was probably deleted while '
+            'this screen was open.',
+      );
+    }
+    return ing;
+  }
+
   /// Records a restock. Stock and cost basis are derived, so this only
   /// appends to the ledger.
+  ///
+  /// Throws [ArgumentError] if [ingredientId] is unknown.
   Purchase recordPurchase({
     required String ingredientId,
     required double volumeMl,
     required double cost,
     double shippingCost = 0,
   }) {
-    final ing = byId(ingredientId)!;
+    final ing = _requireIngredient(ingredientId, 'record a purchase');
     final now = DateTime.now();
     final p = Purchase(
       id: newId(),
@@ -1287,6 +1381,7 @@ class AppState extends ChangeNotifier {
     return true;
   }
 
+  /// Throws [ArgumentError] if [ingredientId] is unknown.
   StockAdjustment addAdjustment({
     required String ingredientId,
     required double deltaMl,
@@ -1294,7 +1389,7 @@ class AppState extends ChangeNotifier {
     double costPerMl = 0,
     String note = '',
   }) {
-    final ing = byId(ingredientId)!;
+    final ing = _requireIngredient(ingredientId, 'adjust stock');
     final now = DateTime.now();
     final a = StockAdjustment(
       id: newId(),
@@ -1316,12 +1411,14 @@ class AppState extends ChangeNotifier {
 
   /// Convenience: writes whatever adjustment makes derived stock equal
   /// [targetMl]. This is how "I counted the bottle" gets recorded.
+  ///
+  /// Throws [ArgumentError] if [ingredientId] is unknown.
   StockAdjustment setStockTo(
     String ingredientId,
     double targetMl, {
     String note = '',
   }) {
-    final current = byId(ingredientId)!.stockMl;
+    final current = _requireIngredient(ingredientId, 'set stock').stockMl;
     return addAdjustment(
       ingredientId: ingredientId,
       deltaMl: targetMl - current,

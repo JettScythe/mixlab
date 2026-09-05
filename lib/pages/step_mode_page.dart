@@ -192,8 +192,8 @@ class _StepModePageState extends State<StepModePage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'Logging will deduct what is on hand and floor '
-                'these at zero:',
+                'Logging deducts the full amount, so these will go '
+                'negative until you restock or correct them:',
               ),
               Gap.vSm,
               for (final i in issues)

@@ -24,15 +24,6 @@ double? parseNum(String s) {
   return v;
 }
 
-/// Same as [parseNum] but allows negatives, for signed stock adjustments.
-double? parseSigned(String s) {
-  final t = s.trim().replaceAll(',', '.');
-  if (t.isEmpty) return null;
-  final v = double.tryParse(t);
-  if (v == null || v.isNaN || v.isInfinite) return null;
-  return v;
-}
-
 const knownBrands = <String, String>{
   'TFA': 'The Flavor Apprentice',
   'TPA': 'The Flavor Apprentice',

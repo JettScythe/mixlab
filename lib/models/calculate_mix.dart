@@ -79,6 +79,7 @@ MixResult calculateMix({
         // Nicotine is inherently volumetric: mg/mL of the finished volume.
         final ml = amountMl * targetNic / nic.nicMgPerMl;
         final carrier = clampd(nic.carrierVg, 0, 1);
+        final nicDensity = nic.effectiveDensity(settings);
         if (maxVg) {
           vgMl -= ml;
         } else {
@@ -89,12 +90,12 @@ MixResult calculateMix({
           MixLine(
             nic.displayName,
             ml,
-            ml * nic.density,
+            ml * nicDensity,
             ml * nic.costPerMl,
             nic.id,
             kind: IngredientKind.nicotine,
             vgFraction: carrier,
-            density: nic.density,
+            density: nicDensity,
             costPerMl: nic.costPerMl,
             nicMgPerMl: nic.nicMgPerMl,
           ),
@@ -110,7 +111,10 @@ MixResult calculateMix({
     for (final id in order) {
       final (f, pct) = merged[id]!;
       totalPct += pct;
-      final density = f.density > 0 ? f.density : 1.0;
+      // Missing density falls back to what this ingredient's own kind and
+      // carrier imply, never to a shared constant — a VG-carried flavor is
+      // ~1.26 g/mL, not 1.0.
+      final density = f.effectiveDensity(settings);
       final ml = percentMode == PercentMode.byWeight
           ? assumedGrams * pct / 100 / density
           : amountMl * pct / 100;
@@ -179,8 +183,8 @@ MixResult calculateMix({
       vgMl = clampd(vgMl, 0, double.infinity);
     }
 
-    final pgD = pg?.density ?? settings.pgDensity;
-    final vgD = vg?.density ?? settings.vgDensity;
+    final pgD = pg?.effectiveDensity(settings) ?? settings.pgDensity;
+    final vgD = vg?.effectiveDensity(settings) ?? settings.vgDensity;
     lines.add(
       MixLine(
         pg?.displayName ?? 'PG',

@@ -30,6 +30,17 @@ IngredientKind kindFromIndex(int i) =>
     ? IngredientKind.values[i]
     : IngredientKind.flavor;
 
+/// Reads an enum index from stored JSON without ever throwing.
+///
+/// Corrupt or hand-edited data must degrade to the default, not take down
+/// the whole load with a RangeError — every other field in these models
+/// already tolerates rubbish.
+T enumFromIndex<T>(List<T> values, Object? raw, T fallback) {
+  final i = (raw as num?)?.toInt();
+  if (i == null || i < 0 || i >= values.length) return fallback;
+  return values[i];
+}
+
 String kindLabel(IngredientKind k) => switch (k) {
   IngredientKind.pg => 'PG',
   IngredientKind.vg => 'VG',

@@ -84,9 +84,13 @@ class Recipe {
     batchMl: (j['batchMl'] as num?)?.toDouble() ?? 30,
     targetNic: (j['targetNic'] as num?)?.toDouble() ?? 0,
     targetVgPercent: (j['targetVgPercent'] as num?)?.toDouble() ?? 70,
-    percentMode: PercentMode.values[(j['percentMode'] as num?)?.toInt() ?? 0],
+    percentMode: enumFromIndex(
+      PercentMode.values,
+      j['percentMode'],
+      PercentMode.byVolume,
+    ),
     updatedAt: DateTime.tryParse(j['updatedAt'] as String? ?? ''),
-    baseMode: BaseMode.values[(j['baseMode'] as num?)?.toInt() ?? 0],
+    baseMode: enumFromIndex(BaseMode.values, j['baseMode'], BaseMode.ratio),
     flavors: [
       for (final f in (j['flavors'] as List? ?? const []))
         RecipeFlavor.fromJson(f as Map<String, dynamic>),
