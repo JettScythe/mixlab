@@ -358,6 +358,185 @@ void main() {
       bad.density = 1.261;
       expect(bad.densityLooksWrong(s), isFalse);
     });
+
+    test('a thinner blends from its own base, not PG', () {
+      final s = Settings();
+      // Distilled water and PGA sit near 1.0, below PG. Sharing the flavor
+      // base would weigh a water-thinned mix ~4% heavy.
+      expect(
+        s.densityForCarrier(IngredientKind.thinner, 0),
+        closeTo(s.thinnerDensity, 1e-9),
+      );
+      expect(
+        s.densityForCarrier(IngredientKind.thinner, 0.5),
+        closeTo((1.0 + 1.261) / 2, 1e-9),
+      );
+      expect(
+        s.densityForCarrier(IngredientKind.thinner, 1),
+        closeTo(s.vgDensity, 1e-9),
+      );
+      expect(
+        s.densityForCarrier(IngredientKind.thinner, 0),
+        lessThan(s.densityForCarrier(IngredientKind.flavor, 0)),
+      );
+    });
+
+    test('PG and VG ignore the carrier fraction entirely', () {
+      final s = Settings();
+      // Neat base is its own carrier, so a stray carrierVg on a PG bottle
+      // must not drag its density toward VG.
+      for (final v in [0.0, 0.5, 1.0]) {
+        expect(s.densityForCarrier(IngredientKind.pg, v), closeTo(1.036, 1e-9));
+        expect(s.densityForCarrier(IngredientKind.vg, v), closeTo(1.261, 1e-9));
+      }
+    });
+
+    test('carrier fractions outside 0..1 are clamped, never extrapolated', () {
+      final s = Settings();
+      // Corrupt or hand-edited data must not produce a density below PG or
+      // above VG — that would be a physically impossible weight.
+      expect(
+        s.densityForCarrier(IngredientKind.flavor, -0.5),
+        closeTo(s.densityForCarrier(IngredientKind.flavor, 0), 1e-9),
+      );
+      expect(
+        s.densityForCarrier(IngredientKind.nicotine, 1.5),
+        closeTo(s.densityForCarrier(IngredientKind.nicotine, 1), 1e-9),
+      );
+      expect(
+        s.densityForCarrier(IngredientKind.thinner, 99),
+        closeTo(s.vgDensity, 1e-9),
+      );
+    });
+
+    test('a missing density is repaired on load, not left at zero', () {
+      // Hand-edited backups and records from builds that never set the
+      // field arrive here. Zero is not a measurement.
+      final vgFlavor = Ingredient.fromJson({
+        'id': 'a',
+        'name': 'VG flavor',
+        'kind': IngredientKind.flavor.index,
+        'density': 0,
+        'carrierVg': 1.0,
+      });
+      expect(vgFlavor.density, closeTo(1.261, 1e-9));
+
+      final missing = Ingredient.fromJson({
+        'id': 'b',
+        'name': 'No density at all',
+        'kind': IngredientKind.nicotine.index,
+        'carrierVg': 0.0,
+      });
+      expect(missing.density, closeTo(1.036, 1e-9));
+
+      // A real stored density is never overwritten.
+      final measured = Ingredient.fromJson({
+        'id': 'c',
+        'name': 'Measured',
+        'kind': IngredientKind.flavor.index,
+        'density': 0.98,
+        'carrierVg': 1.0,
+      });
+      expect(measured.density, closeTo(0.98, 1e-9));
+    });
+
+    test('effectiveDensity never yields a shared constant', () {
+      final s = Settings();
+      final vgFlavor = Ingredient(
+        id: 'a',
+        name: 'a',
+        kind: IngredientKind.flavor,
+        density: 0,
+        carrierVg: 1,
+      );
+      // The old fallback was a flat 1.0 — 26% light on VG-carried stock,
+      // and the error compounds through the whole weigh-along.
+      expect(vgFlavor.effectiveDensity(s), closeTo(1.261, 1e-9));
+      expect(vgFlavor.effectiveDensity(s), isNot(closeTo(1.0, 1e-6)));
+    });
+
+    test('a zero-density flavor is weighed by its carrier in a mix', () {
+      final broken = Ingredient(
+        id: 'a',
+        name: 'VG flavor',
+        kind: IngredientKind.flavor,
+        density: 0,
+        carrierVg: 1,
+        stockMl: 100,
+      );
+      final r = calculateMix(
+        amountMl: 100,
+        targetNic: 0,
+        targetVgPercent: 50,
+        settings: Settings(),
+        flavors: [(broken, 10)],
+      );
+      final line = r.lines.firstWhere((l) => l.ingredientId == 'a');
+      expect(line.ml, closeTo(10, 1e-9));
+      // 10 mL of VG-carried concentrate is 12.61 g, not 10 g.
+      expect(line.grams, closeTo(12.61, 1e-9));
+      expect(line.density, closeTo(1.261, 1e-9));
+    });
+
+    test('a zero-density nicotine base is weighed by its carrier', () {
+      final broken = Ingredient(
+        id: 'n',
+        name: 'Nic VG',
+        kind: IngredientKind.nicotine,
+        density: 0,
+        nicStrength: 100,
+        carrierVg: 1,
+      );
+      final r = calculateMix(
+        amountMl: 100,
+        targetNic: 3,
+        targetVgPercent: 100,
+        settings: Settings(),
+        nic: broken,
+      );
+      final line = r.lines.firstWhere((l) => l.ingredientId == 'n');
+      expect(line.ml, closeTo(3, 1e-9));
+      expect(line.grams, closeTo(3 * 1.261, 1e-9));
+    });
+
+    test('a weighed line with no density still deducts stock', () {
+      // withGrams used to map every weight to 0 mL when density was zero,
+      // so an overpour logged grams but deducted nothing at all.
+      final line = MixLine(
+        'Broken',
+        10,
+        0,
+        1.0,
+        'a',
+        density: 0,
+        costPerMl: 0.1,
+      );
+      final weighed = line.withGrams(12.61);
+      expect(weighed.grams, closeTo(12.61, 1e-9));
+      expect(weighed.ml, greaterThan(0));
+      expect(weighed.cost, greaterThan(0));
+    });
+
+    test('withGrams recovers the planned ratio when density is missing', () {
+      // grams/ml on the planned line is the best evidence available.
+      final line = MixLine('Planned', 10, 12.61, 1.0, 'a', density: 0);
+      final weighed = line.withGrams(25.22);
+      expect(weighed.ml, closeTo(20, 1e-9));
+      expect(weighed.density, closeTo(1.261, 1e-9));
+    });
+
+    test('custom densities flow through the carrier blend', () {
+      // The blend must read the user's settings, not baked-in constants.
+      final s = Settings(pgDensity: 1.0, vgDensity: 1.3, flavorDensity: 1.0);
+      expect(
+        s.densityForCarrier(IngredientKind.nicotine, 0.5),
+        closeTo(1.15, 1e-9),
+      );
+      expect(
+        s.densityForCarrier(IngredientKind.flavor, 0.5),
+        closeTo(1.15, 1e-9),
+      );
+    });
   });
 
   group('StepPlan', () {
@@ -543,6 +722,93 @@ void main() {
       expect(log.targetNic, 6);
       expect(log.actualNic, lessThan(6));
       expect(log.nicDrifted, isTrue);
+    });
+  });
+
+  group('achieved ratio and flavor after weighing', () {
+    /// 100 mL at 50/50 with a 10% flavor, then one line overpoured.
+    (StepPlan, List<double?>) weighed(String overpour, double factor) {
+      final r = calculateMix(
+        amountMl: 100,
+        targetNic: 3,
+        targetVgPercent: 50,
+        settings: Settings(),
+        nic: nicBase(),
+        flavors: [(flavor('a'), 10)],
+      );
+      final plan = StepPlan(r.lines, 0.01);
+      final i = plan.lines.indexWhere((l) => l.name == overpour);
+      final actual = List<double?>.filled(plan.length, null);
+      actual[i] = plan.plannedGrams(i) * factor;
+      return (plan, actual);
+    }
+
+    test('overpouring VG raises the achieved VG percentage', () {
+      final planned = calculateMix(
+        amountMl: 100,
+        targetNic: 3,
+        targetVgPercent: 50,
+        settings: Settings(),
+        nic: nicBase(),
+        flavors: [(flavor('a'), 10)],
+      );
+      expect(planned.actualVgPercent, closeTo(50, 1e-9));
+
+      final (plan, actual) = weighed('VG', 2);
+      final result = MixResult(plan.actualLines(actual), const []);
+      // Recomputed from real weights, not read back off the plan.
+      expect(result.actualVgPercent, greaterThan(60));
+      expect(result.actualVgPercent, lessThan(100));
+    });
+
+    test('overpouring PG lowers it, symmetrically', () {
+      final (plan, actual) = weighed('PG', 2);
+      final result = MixResult(plan.actualLines(actual), const []);
+      expect(result.actualVgPercent, lessThan(50));
+    });
+
+    test('logMix persists the achieved ratio, not the target', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      final (plan, actual) = weighed('VG', 2);
+
+      final log = s.logMix(
+        MixResult(plan.actualLines(actual), const []),
+        targetVgPercent: 50,
+        targetNic: 3,
+        weighed: true,
+      );
+      expect(log.targetVgPercent, 50);
+      expect(log.actualVgPercent, greaterThan(60));
+    });
+
+    test('overpouring a flavor raises both flavor percentages', () {
+      final planned = calculateMix(
+        amountMl: 100,
+        targetNic: 3,
+        targetVgPercent: 50,
+        settings: Settings(),
+        nic: nicBase(),
+        flavors: [(flavor('a'), 10)],
+      );
+      expect(planned.flavorPercentByVolume, closeTo(10, 1e-9));
+
+      final (plan, actual) = weighed('a', 2);
+      final result = MixResult(plan.actualLines(actual), const []);
+      expect(result.flavorPercentByVolume, greaterThan(17));
+      expect(result.flavorPercentByWeight, greaterThan(15));
+      // Flavor is lighter than the VG-heavy remainder, so the weight
+      // share stays below the volume share.
+      expect(
+        result.flavorPercentByWeight,
+        lessThan(result.flavorPercentByVolume),
+      );
+    });
+
+    test('underpouring is reflected too, not just overpouring', () {
+      final (plan, actual) = weighed('VG', 0.5);
+      final result = MixResult(plan.actualLines(actual), const []);
+      expect(result.actualVgPercent, lessThan(40));
     });
   });
 
@@ -886,6 +1152,106 @@ void main() {
     });
   });
 
+  group('corrupt enum indices degrade instead of throwing', () {
+    test('an out-of-range index falls back to the default', () {
+      // A RangeError here would abort the whole load, where every other
+      // field in these models tolerates rubbish.
+      final r = Recipe.fromJson({
+        'id': 'r',
+        'name': 'R',
+        'percentMode': 99,
+        'baseMode': -3,
+      });
+      expect(r.percentMode, PercentMode.byVolume);
+      expect(r.baseMode, BaseMode.ratio);
+
+      final s = Settings.fromJson({'defaultPercentMode': 42, 'costBasis': -1});
+      expect(s.defaultPercentMode, PercentMode.byVolume);
+      expect(s.costBasis, CostBasis.movingAverage);
+
+      final i = Ingredient.fromJson({
+        'id': 'i',
+        'name': 'I',
+        'kind': 3,
+        'density': 1.0,
+        'nicUnit': 7,
+      });
+      expect(i.nicUnit, NicUnit.perMl);
+
+      final a = StockAdjustment.fromJson({
+        'id': 'a',
+        'ingredientId': 'x',
+        'reason': 99,
+      });
+      expect(a.reason, AdjustReason.correction);
+
+      final t = Tombstone.fromJson({'recordId': 'x', 'type': 99});
+      expect(t.type, RecordType.ingredient);
+    });
+
+    test('a whole backup of corrupt indices still restores', () async {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      await s.restoreFromBackup(
+        jsonEncode({
+          'app': 'mixlab',
+          'schema': AppState.currentSchema,
+          'ingredients': [
+            {
+              'id': 'a',
+              'name': 'Odd',
+              'kind': 99,
+              'density': 1.0,
+              'nicUnit': 99,
+            },
+          ],
+          'recipes': [
+            {'id': 'r', 'name': 'Odd', 'percentMode': 99, 'baseMode': 99},
+          ],
+        }),
+      );
+      expect(s.byId('a')!.kind, IngredientKind.flavor);
+      expect(s.recipes.single.percentMode, PercentMode.byVolume);
+    });
+  });
+
+  group('ledger writes reject a stale ingredient id', () {
+    AppState empty() {
+      SharedPreferences.setMockInitialValues({});
+      return AppState(autoLoad: false);
+    }
+
+    test('recordPurchase explains itself instead of crashing', () {
+      expect(
+        () =>
+            empty().recordPurchase(ingredientId: 'gone', volumeMl: 10, cost: 1),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('addAdjustment and setStockTo do the same', () {
+      expect(
+        () => empty().addAdjustment(ingredientId: 'gone', deltaMl: 5),
+        throwsA(isA<ArgumentError>()),
+      );
+      expect(
+        () => empty().setStockTo('gone', 5),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('nothing is written when the id is unknown', () {
+      final s = empty();
+      try {
+        s.addAdjustment(ingredientId: 'gone', deltaMl: 5);
+      } on ArgumentError {
+        // expected
+      }
+      expect(s.adjustments, isEmpty);
+      expect(s.purchases, isEmpty);
+    });
+  });
+
   group('serialization', () {
     test('recipe round-trip', () {
       final r = Recipe(
@@ -1039,6 +1405,134 @@ void main() {
       );
       expect(s.byId('z')!.brand, 'CAP');
       expect(s.byId('z')!.name, 'Sweet Cream');
+    });
+
+    /// The full ladder, on one store. Each migration is covered in
+    /// isolation elsewhere; this proves they compose — v2 rewrites the
+    /// ingredient blob that v9 later re-reads, and v4 links logs that v9
+    /// then replays for stock.
+    test('a v1 store migrates all the way to current in one load', () async {
+      // No schema_version key at all, which is how a real v1 install reads.
+      SharedPreferences.setMockInitialValues({
+        'ingredients_v1': jsonEncode([
+          {
+            'id': 'a',
+            'name': 'TFA Strawberry (Ripe)', // v2 splits this
+            'kind': IngredientKind.flavor.index,
+            'density': 1.0,
+            'stockMl': 22.5, // v9 reconciles this
+            'bottleSizeMl': 30,
+            'bottleCost': 3,
+          },
+          {
+            'id': 'v',
+            'name': 'VG',
+            'kind': IngredientKind.vg.index,
+            'density': 1.261,
+            'stockMl': 480,
+            'bottleSizeMl': 500,
+            'bottleCost': 14,
+          },
+        ]),
+        'recipes_v1': jsonEncode([
+          {'id': 'r1', 'name': 'Mustard Milk', 'flavors': <Object>[]},
+        ]),
+        'mixlog_v1': jsonEncode([
+          {
+            'id': 'l1',
+            'mixedAt': '2026-01-02T00:00:00.000',
+            'label': 'mustard milk', // v4 links this by label
+            'batchMl': 30,
+            'lines': [
+              {
+                'name': 'TFA Strawberry (Ripe)',
+                'ingredientId': 'a',
+                'requestedMl': 7.5,
+                'deductedMl': 7.5,
+              },
+              {
+                'name': 'VG',
+                'ingredientId': 'v',
+                'requestedMl': 20,
+                'deductedMl': 20,
+              },
+            ],
+          },
+        ]),
+        'purchases_v1': jsonEncode([
+          {
+            'id': 'p1',
+            'ingredientId': 'a',
+            'ingredientName': 'TFA Strawberry (Ripe)',
+            'at': '2026-01-01T00:00:00.000',
+            'volumeMl': 30,
+            'cost': 3,
+          },
+        ]),
+      });
+
+      final s = AppState();
+      await waitReady(s);
+      expect(s.loadError, isNull);
+
+      // v2: brand pulled off the front of the name.
+      expect(s.byId('a')!.brand, 'TFA');
+      expect(s.byId('a')!.name, 'Strawberry (Ripe)');
+
+      // v4: the log found its recipe despite the case difference.
+      expect(s.mixLog.single.recipeId, 'r1');
+
+      // v9: stock comes out exactly where the user left it. 'a' needs no
+      // opening balance (30 bought - 7.5 mixed = 22.5 already), 'v' needs
+      // one for the whole 500 it never had a purchase for.
+      expect(s.byId('a')!.stockMl, closeTo(22.5, 1e-9));
+      expect(s.byId('v')!.stockMl, closeTo(480, 1e-9));
+      expect(
+        s.adjustments.where((x) => x.reason == AdjustReason.opening).length,
+        1,
+      );
+      expect(s.byId('v')!.costPerMl, closeTo(0.028, 1e-3));
+
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getInt('schema_version'), AppState.currentSchema);
+    });
+
+    test('an interrupted v9 does not double stock on the next load', () async {
+      // The v9 block writes adjustments, then stamps the schema. A crash
+      // between the two leaves this: opening balances present, version
+      // still 8. Re-running must be a no-op, not a second balance.
+      SharedPreferences.setMockInitialValues({
+        'schema_version': 8,
+        'ingredients_v1': jsonEncode([
+          {
+            'id': 'v',
+            'name': 'VG',
+            'kind': IngredientKind.vg.index,
+            'density': 1.261,
+            'stockMl': 500,
+            'bottleSizeMl': 500,
+            'bottleCost': 14,
+          },
+        ]),
+        'adjustments_v1': jsonEncode([
+          {
+            'id': 'opening-v',
+            'ingredientId': 'v',
+            'ingredientName': 'VG',
+            'at': '2026-01-01T00:00:00.000',
+            'deltaMl': 500,
+            'reason': AdjustReason.opening.index,
+            'costPerMl': 0.028,
+            'note': 'Opening balance, recorded when stock became a ledger.',
+          },
+        ]),
+      });
+
+      final s = AppState();
+      await waitReady(s);
+
+      expect(s.adjustments.length, 1);
+      expect(s.byId('v')!.stockMl, closeTo(500, 1e-9));
     });
   });
 
@@ -2257,6 +2751,104 @@ some line with no numbers at all
       await a.applyMerge(plan);
       expect(a.settings.currency, 'USD');
     });
+
+    test('a declined delete keeps the record and its tombstone away', () async {
+      final (a, b) = twoDevices();
+      final r = Recipe(id: 'r1', name: 'Contested')
+        ..updatedAt = DateTime(2026, 1, 1);
+      a.recipes.add(r);
+      b.recipes.add(
+        Recipe.fromJson(
+          jsonDecode(jsonEncode(r.toJson())) as Map<String, dynamic>,
+        ),
+      );
+      b.removeRecipe('r1');
+
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.countOf(MergeAction.delete), 1);
+      plan.items.single.accept = false;
+      await a.applyMerge(plan);
+
+      // The record survives, as asked.
+      expect(a.recipeById('r1'), isNotNull);
+      // And no grave was dug for it. Folding the tombstone anyway would
+      // make A tell every other device to delete a record A still holds,
+      // and buried() would stop it ever syncing back.
+      expect(a.tombstones.any((t) => t.recordId == 'r1'), isFalse);
+    });
+
+    test('applying the same plan twice does not double stock', () async {
+      final (a, b) = twoDevices();
+      stocked(b, 'x', 100);
+
+      final plan = a.previewMerge(b.exportJson());
+      await a.applyMerge(plan);
+      final after = a.byId('x')!.stockMl;
+      expect(after, closeTo(100, 1e-9));
+
+      // The preview would filter a second pass, but the plan object itself
+      // must be idempotent — ledger events have no undo but a fresh replay.
+      await a.applyMerge(plan);
+      expect(a.adjustments.length, 1);
+      expect(a.byId('x')!.stockMl, closeTo(after, 1e-9));
+    });
+
+    test('a pre-ledger backup merges with its stock intact', () async {
+      final (a, _) = twoDevices();
+      final dump = jsonEncode({
+        'app': 'mixlab',
+        'schema': 8,
+        'deviceId': 'old-device',
+        'ingredients': [
+          {
+            'id': 'v',
+            'name': 'VG',
+            'kind': IngredientKind.vg.index,
+            'density': 1.261,
+            'stockMl': 500,
+            'bottleSizeMl': 500,
+            'bottleCost': 14,
+            'updatedAt': DateTime(2026, 1, 1).toIso8601String(),
+          },
+        ],
+      });
+
+      await a.applyMerge(a.previewMerge(dump));
+
+      // Stock is derived from the ledger, so without synthesised opening
+      // balances the whole inventory would arrive reading 0 mL.
+      expect(a.byId('v')!.stockMl, closeTo(500, 1e-9));
+      expect(a.adjustments.single.reason, AdjustReason.opening);
+      expect(a.byId('v')!.costPerMl, closeTo(0.028, 1e-3));
+
+      // Idempotent: the opening id is deterministic, so a second merge of
+      // the same file is a no-op.
+      expect(a.previewMerge(dump).items, isEmpty);
+      await a.applyMerge(a.previewMerge(dump));
+      expect(a.byId('v')!.stockMl, closeTo(500, 1e-9));
+    });
+
+    test('a pre-v2 backup merges with its brand split out', () async {
+      final (a, _) = twoDevices();
+      await a.applyMerge(
+        a.previewMerge(
+          jsonEncode({
+            'app': 'mixlab',
+            'schema': 1,
+            'ingredients': [
+              {
+                'id': 'z',
+                'name': 'CAP Sweet Cream',
+                'kind': IngredientKind.flavor.index,
+                'density': 1.036,
+              },
+            ],
+          }),
+        ),
+      );
+      expect(a.byId('z')!.brand, 'CAP');
+      expect(a.byId('z')!.name, 'Sweet Cream');
+    });
   });
 
   group('cost basis', () {
@@ -2400,6 +2992,182 @@ some line with no numbers at all
       expect(s.mixLog.first.totalCost, closeTo(10 + 30 + 15, 1e-9));
       expect(s.mixLog.first.costEstimated, isTrue);
       expect(s.byId('a')!.costPerMl, closeTo(0.30, 1e-9));
+    });
+
+    test('restocking after an overdraw does not re-price the deficit', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false)
+        ..settings = Settings(costBasis: CostBasis.fifo);
+      s.ingredients.add(flavor('a')..stockMl = 0);
+      s.purchases.add(
+        Purchase(
+          id: 'p1',
+          ingredientId: 'a',
+          ingredientName: 'a',
+          at: DateTime(2026, 1, 1),
+          volumeMl: 100,
+          cost: 10, // 0.10/mL
+        ),
+      );
+      s.recomputeStock();
+
+      drawMix(s, 150, at: DateTime(2026, 2, 1)); // 50 mL beyond stock
+      expect(s.byId('a')!.stockMl, closeTo(-50, 1e-9));
+      // 100 at 0.10 plus 50 assumed at 0.10.
+      expect(s.mixLog.first.totalCost, closeTo(15, 1e-9));
+      expect(s.byId('a')!.stockValue, closeTo(-5, 1e-9));
+
+      // Restock 20 mL at triple the price. That only part-settles the 50
+      // mL owed. The 30 mL still outstanding was charged at 0.10 and must
+      // stay valued there — pricing it at 0.30 would invent cost that was
+      // never spent and never charged.
+      s.purchases.add(
+        Purchase(
+          id: 'p2',
+          ingredientId: 'a',
+          ingredientName: 'a',
+          at: DateTime(2026, 3, 1),
+          volumeMl: 20,
+          cost: 6, // 0.30/mL
+        ),
+      );
+      s.recomputeStock();
+
+      expect(s.byId('a')!.stockMl, closeTo(-30, 1e-9));
+      expect(s.byId('a')!.stockValue, closeTo(-3, 1e-9));
+      // The historical mix is untouched: a later purchase cannot change
+      // what an earlier mix cost.
+      expect(s.mixLog.first.totalCost, closeTo(15, 1e-9));
+    });
+
+    test('a settled deficit leaves the new price in charge', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false)
+        ..settings = Settings(costBasis: CostBasis.fifo);
+      s.ingredients.add(flavor('a')..stockMl = 0);
+      s.purchases.add(
+        Purchase(
+          id: 'p1',
+          ingredientId: 'a',
+          ingredientName: 'a',
+          at: DateTime(2026, 1, 1),
+          volumeMl: 100,
+          cost: 10,
+        ),
+      );
+      s.recomputeStock();
+      drawMix(s, 150, at: DateTime(2026, 2, 1));
+
+      // Restock enough to clear the 50 mL deficit and leave 50 mL on hand.
+      s.purchases.add(
+        Purchase(
+          id: 'p2',
+          ingredientId: 'a',
+          ingredientName: 'a',
+          at: DateTime(2026, 3, 1),
+          volumeMl: 100,
+          cost: 30, // 0.30/mL
+        ),
+      );
+      s.recomputeStock();
+
+      expect(s.byId('a')!.stockMl, closeTo(50, 1e-9));
+      expect(s.byId('a')!.costPerMl, closeTo(0.30, 1e-9));
+      expect(s.byId('a')!.stockValue, closeTo(15, 1e-9));
+    });
+
+    test('deficits at different rates blend before being settled', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false)
+        ..settings = Settings(costBasis: CostBasis.fifo);
+      s.ingredients.add(flavor('a')..stockMl = 0);
+      s.purchases.add(
+        Purchase(
+          id: 'p1',
+          ingredientId: 'a',
+          ingredientName: 'a',
+          at: DateTime(2026, 1, 1),
+          volumeMl: 100,
+          cost: 10, // 0.10/mL
+        ),
+      );
+      s.recomputeStock();
+
+      drawMix(s, 140, at: DateTime(2026, 2, 1)); // 40 mL over, at 0.10
+      // Restock at 0.50, then overdraw again at that rate.
+      s.purchases.add(
+        Purchase(
+          id: 'p2',
+          ingredientId: 'a',
+          ingredientName: 'a',
+          at: DateTime(2026, 3, 1),
+          volumeMl: 40, // exactly settles the first deficit
+          cost: 20, // 0.50/mL
+        ),
+      );
+      s.recomputeStock();
+      drawMix(s, 60, at: DateTime(2026, 4, 1)); // all 60 beyond stock
+
+      expect(s.byId('a')!.stockMl, closeTo(-60, 1e-9));
+      // The second deficit accrued entirely at the 0.50 rate.
+      expect(s.byId('a')!.stockValue, closeTo(-30, 1e-9));
+    });
+
+    test('restock preview matches what recording actually does', () {
+      for (final basis in CostBasis.values) {
+        final s = twoPrices(basis);
+        drawMix(s, 150); // leaves 50 mL, and under FIFO only the dear layer
+
+        final predicted = s.previewRestockBasis(
+          ingredientId: 'a',
+          volumeMl: 100,
+          cost: 5, // 0.05/mL, far below anything already in the book
+        );
+        s.recordPurchase(ingredientId: 'a', volumeMl: 100, cost: 5);
+
+        expect(
+          s.byId('a')!.costPerMl,
+          closeTo(predicted, 1e-9),
+          reason: 'preview disagreed with reality under $basis',
+        );
+      }
+    });
+
+    test('the preview is basis-aware, not always a moving average', () {
+      final avg = twoPrices(CostBasis.movingAverage);
+      final fifo = twoPrices(CostBasis.fifo);
+      drawMix(avg, 150);
+      drawMix(fifo, 150);
+
+      double preview(AppState s) =>
+          s.previewRestockBasis(ingredientId: 'a', volumeMl: 100, cost: 5);
+
+      // Same ledger, same pending purchase, genuinely different answers.
+      // The old hand-rolled blend returned the moving-average figure for
+      // both, so FIFO users were shown a number the app would not use.
+      expect(preview(avg), isNot(closeTo(preview(fifo), 1e-6)));
+    });
+
+    test('preview folds shipping in and handles an empty ledger', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      s.ingredients.add(flavor('a')..stockMl = 0);
+      s.recomputeStock();
+
+      expect(
+        s.previewRestockBasis(
+          ingredientId: 'a',
+          volumeMl: 100,
+          cost: 10,
+          shippingCost: 5,
+        ),
+        closeTo(0.15, 1e-9),
+      );
+      // A zero-volume restock is not a purchase; fall back to what we show.
+      expect(
+        s.previewRestockBasis(ingredientId: 'a', volumeMl: 0, cost: 10),
+        closeTo(s.byId('a')!.costPerMl, 1e-9),
+      );
     });
 
     test('an ingredient with no ledger costs nothing and holds nothing', () {

@@ -61,9 +61,6 @@ class Settings {
 
   DateTime get syncStamp => updatedAt ?? beforeSync;
 
-  /// Density implied by kind alone. Prefer [densityForCarrier].
-  double densityFor(IngredientKind k) => densityForCarrier(k, 0);
-
   /// Carrier-aware density. A 100% VG nicotine base is ~1.26 g/mL, not the
   /// 1.036 that a naive PG default would give — a ~20% weight error.
   double densityForCarrier(IngredientKind k, double carrierVg) {
@@ -112,19 +109,21 @@ class Settings {
     scaleResolution: (j['scaleResolution'] as num?)?.toDouble() ?? 0.01,
     tareEachStep: j['tareEachStep'] as bool? ?? false,
     lowStockMl: (j['lowStockMl'] as num?)?.toDouble() ?? 5,
-    defaultPercentMode:
-        PercentMode.values[(j['defaultPercentMode'] as num?)?.toInt() ?? 0],
+    defaultPercentMode: enumFromIndex(
+      PercentMode.values,
+      j['defaultPercentMode'],
+      PercentMode.byVolume,
+    ),
     themeMode: (j['themeMode'] as num?)?.toInt() ?? 0,
     includeHardware: j['includeHardware'] as bool? ?? false,
     emptyBottleCost: (j['emptyBottleCost'] as num?)?.toDouble() ?? 0,
     emptyBottleMl: (j['emptyBottleMl'] as num?)?.toDouble() ?? 30,
     consumablesCost: (j['consumablesCost'] as num?)?.toDouble() ?? 0,
     updatedAt: DateTime.tryParse(j['updatedAt'] as String? ?? ''),
-    costBasis:
-        CostBasis.values[(j['costBasis'] as num?)?.toInt().clamp(
-              0,
-              CostBasis.values.length - 1,
-            ) ??
-            0],
+    costBasis: enumFromIndex(
+      CostBasis.values,
+      j['costBasis'],
+      CostBasis.movingAverage,
+    ),
   );
 }

@@ -258,12 +258,7 @@ class _AdjustDialogState extends State<_AdjustDialog> {
         ? ing.stockMl
         : _setMode
         ? v
-        : (_reason == AdjustReason.spill ||
-                  _reason == AdjustReason.evaporation ||
-                  _reason == AdjustReason.disposal ||
-                  _reason == AdjustReason.gift
-              ? ing.stockMl - v
-              : ing.stockMl + v);
+        : (adjustReasonRemoves(_reason) ? ing.stockMl - v : ing.stockMl + v);
 
     return AlertDialog(
       title: Text('Adjust ${ing.displayName}'),
@@ -365,11 +360,7 @@ class _AdjustDialogState extends State<_AdjustDialog> {
                   if (_setMode) {
                     widget.state.setStockTo(ing.id, v, note: _note.text.trim());
                   } else {
-                    final negative =
-                        _reason == AdjustReason.spill ||
-                        _reason == AdjustReason.evaporation ||
-                        _reason == AdjustReason.disposal ||
-                        _reason == AdjustReason.gift;
+                    final negative = adjustReasonRemoves(_reason);
                     widget.state.addAdjustment(
                       ingredientId: ing.id,
                       deltaMl: negative ? -v : v,

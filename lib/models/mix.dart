@@ -32,8 +32,15 @@ class MixLine {
   final double nicMgPerMl;
 
   /// Rebuilds this line around an actual weighed amount.
+  ///
+  /// A non-positive density would make every weighed amount convert to
+  /// zero millilitres, so the ledger would deduct nothing and the achieved
+  /// nicotine and ratio — both per-mL — would quietly drop this line. Fall
+  /// back to the planned grams-per-mL, then to 1:1, so a real weight always
+  /// produces a real volume.
   MixLine withGrams(double g) {
-    final v = density > 0 ? g / density : 0.0;
+    final d = density > 0 ? density : (ml > 0 && grams > 0 ? grams / ml : 1.0);
+    final v = g / d;
     return MixLine(
       name,
       v,
@@ -42,7 +49,9 @@ class MixLine {
       ingredientId,
       kind: kind,
       vgFraction: vgFraction,
-      density: density,
+      // Carry the repaired figure, so re-weighing the same line stays
+      // consistent instead of re-deriving the fallback each time.
+      density: d,
       costPerMl: costPerMl,
       nicMgPerMl: nicMgPerMl,
     );

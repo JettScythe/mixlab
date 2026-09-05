@@ -68,6 +68,14 @@ class Ingredient {
 
   double get stockGrams => stockMl * density;
 
+  /// Density to weigh with. A stored density of zero or less is not a
+  /// measurement, it is missing data — from a hand-edited backup, or a
+  /// record merged from a build that never set it. Falling back to the
+  /// carrier-implied figure keeps the weight honest; falling back to a
+  /// shared constant would put a VG-carried flavor ~26% light.
+  double effectiveDensity(Settings s) =>
+      density > 0 ? density : s.densityForCarrier(kind, carrierVg);
+
   /// Records disagree with reality. Almost always an unlogged purchase or
   /// a mix logged twice.
   bool get stockIsNegative => stockMl < -1e-9;
@@ -106,21 +114,35 @@ class Ingredient {
     'updatedAt': updatedAt?.toIso8601String(),
   };
 
-  factory Ingredient.fromJson(Map<String, dynamic> j) => Ingredient(
-    id: j['id'] as String,
-    name: j['name'] as String,
-    brand: j['brand'] as String? ?? '',
-    kind: kindFromIndex(j['kind'] as int),
-    density: (j['density'] as num).toDouble(),
-    bottleSizeMl: (j['bottleSizeMl'] as num?)?.toDouble() ?? 0,
-    bottleCost: (j['bottleCost'] as num?)?.toDouble() ?? 0,
-    avgCostPerMl: (j['avgCostPerMl'] as num?)?.toDouble() ?? 0,
-    stockMl: (j['stockMl'] as num?)?.toDouble() ?? 0,
-    nicStrength: (j['nicStrength'] as num?)?.toDouble() ?? 0,
-    nicUnit: NicUnit.values[(j['nicUnit'] as num?)?.toInt() ?? 0],
-    nicIsSalt: j['nicIsSalt'] as bool? ?? false,
-    carrierVg: (j['carrierVg'] as num?)?.toDouble() ?? 0,
-    notes: j['notes'] as String? ?? '',
-    updatedAt: DateTime.tryParse(j['updatedAt'] as String? ?? ''),
-  );
+  factory Ingredient.fromJson(Map<String, dynamic> j) {
+    final kind = kindFromIndex(j['kind'] as int);
+    final carrierVg = (j['carrierVg'] as num?)?.toDouble() ?? 0;
+    final stored = (j['density'] as num?)?.toDouble() ?? 0;
+
+    return Ingredient(
+      id: j['id'] as String,
+      name: j['name'] as String,
+      brand: j['brand'] as String? ?? '',
+      kind: kind,
+      // A non-positive density is invalid, not a measurement, and would
+      // otherwise reach the mixing math. Repair it on the way in so the
+      // bad value never propagates. Defaults are used because no Settings
+      // is in scope here; the result is still carrier-aware, and the
+      // ingredient editor flags any real disagreement via
+      // [densityLooksWrong].
+      density: stored > 0
+          ? stored
+          : Settings().densityForCarrier(kind, carrierVg),
+      bottleSizeMl: (j['bottleSizeMl'] as num?)?.toDouble() ?? 0,
+      bottleCost: (j['bottleCost'] as num?)?.toDouble() ?? 0,
+      avgCostPerMl: (j['avgCostPerMl'] as num?)?.toDouble() ?? 0,
+      stockMl: (j['stockMl'] as num?)?.toDouble() ?? 0,
+      nicStrength: (j['nicStrength'] as num?)?.toDouble() ?? 0,
+      nicUnit: enumFromIndex(NicUnit.values, j['nicUnit'], NicUnit.perMl),
+      nicIsSalt: j['nicIsSalt'] as bool? ?? false,
+      carrierVg: carrierVg,
+      notes: j['notes'] as String? ?? '',
+      updatedAt: DateTime.tryParse(j['updatedAt'] as String? ?? ''),
+    );
+  }
 }

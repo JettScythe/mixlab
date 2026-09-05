@@ -769,9 +769,9 @@ class _CalculatorPageState extends State<CalculatorPage> {
       builder: (context) => AlertDialog(
         title: const Text('Mix anyway?'),
         content: Text(
-          'You are short on ${issues.length} ingredient(s). Logging will '
-          'deduct what you have and floor those at zero. You can undo from '
-          'the History tab.',
+          'You are short on ${issues.length} ingredient(s). Logging deducts '
+          'the full amount, so those will show a negative balance until you '
+          'restock or correct them. You can undo from the History tab.',
         ),
         actions: [
           TextButton(

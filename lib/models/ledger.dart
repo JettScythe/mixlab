@@ -122,11 +122,11 @@ class StockAdjustment {
         DateTime.tryParse(j['at'] as String? ?? '') ??
         DateTime.fromMillisecondsSinceEpoch(0),
     deltaMl: (j['deltaMl'] as num?)?.toDouble() ?? 0,
-    reason:
-        AdjustReason.values[((j['reason'] as num?)?.toInt() ?? 1).clamp(
-          0,
-          AdjustReason.values.length - 1,
-        )],
+    reason: enumFromIndex(
+      AdjustReason.values,
+      j['reason'],
+      AdjustReason.correction,
+    ),
     costPerMl: (j['costPerMl'] as num?)?.toDouble() ?? 0,
     note: j['note'] as String? ?? '',
     updatedAt: DateTime.tryParse(j['updatedAt'] as String? ?? ''),
@@ -187,12 +187,7 @@ class Tombstone {
   };
 
   factory Tombstone.fromJson(Map<String, dynamic> j) => Tombstone(
-    type:
-        RecordType.values[(j['type'] as num?)?.toInt().clamp(
-              0,
-              RecordType.values.length - 1,
-            ) ??
-            0],
+    type: enumFromIndex(RecordType.values, j['type'], RecordType.ingredient),
     recordId: j['recordId'] as String,
     deletedAt:
         DateTime.tryParse(j['deletedAt'] as String? ?? '') ??

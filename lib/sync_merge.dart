@@ -6,6 +6,7 @@ import 'package:mixlab/models/ledger.dart';
 import 'package:mixlab/models/mix.dart';
 import 'package:mixlab/models/recipe.dart';
 import 'package:mixlab/models/settings.dart';
+import 'package:mixlab/models/units.dart';
 
 /// Marker written into every export. Checked before a file is allowed to
 /// touch stored data, so picking the wrong `.json` fails loudly instead of
@@ -172,6 +173,65 @@ String _ingredientDiff(Ingredient local, Ingredient remote) {
   return bits.isEmpty ? 'no visible difference' : bits.join(' • ');
 }
 
+/// Synthesises the opening-balance adjustments a pre-v9 payload is
+/// missing, so its ingredient-held stock survives into the ledger.
+///
+/// Mirrors the v9 migration in [AppState] deliberately, ids included: the
+/// same data brought forward by either route must produce the same
+/// records, or upgrading the other device would double its stock.
+List<Map<String, dynamic>> _openingBalancesFor({
+  required List<Map<String, dynamic>> ingredients,
+  required List<dynamic> purchases,
+  required List<dynamic> mixLog,
+}) {
+  final replayed = <String, double>{};
+  for (final e in purchases) {
+    final p = e as Map<String, dynamic>;
+    final id = p['ingredientId'] as String?;
+    if (id == null) continue;
+    replayed[id] =
+        (replayed[id] ?? 0) + ((p['volumeMl'] as num?)?.toDouble() ?? 0);
+  }
+  for (final e in mixLog) {
+    for (final line
+        in ((e as Map<String, dynamic>)['lines'] as List? ?? const [])) {
+      final m = line as Map<String, dynamic>;
+      final id = m['ingredientId'] as String?;
+      if (id == null) continue;
+      replayed[id] =
+          (replayed[id] ?? 0) - ((m['requestedMl'] as num?)?.toDouble() ?? 0);
+    }
+  }
+
+  final now = DateTime.now().toIso8601String();
+  final out = <Map<String, dynamic>>[];
+  for (final j in ingredients) {
+    final id = j['id'] as String?;
+    if (id == null) continue;
+    final delta =
+        ((j['stockMl'] as num?)?.toDouble() ?? 0) - (replayed[id] ?? 0);
+    if (delta.abs() < 1e-9) continue;
+
+    // Carry the cost basis across so per-mL figures do not reset to zero.
+    final avg = (j['avgCostPerMl'] as num?)?.toDouble() ?? 0;
+    final size = (j['bottleSizeMl'] as num?)?.toDouble() ?? 0;
+    final price = (j['bottleCost'] as num?)?.toDouble() ?? 0;
+    final basis = avg > 0 ? avg : (size > 0 ? price / size : 0.0);
+
+    out.add({
+      'id': 'opening-$id',
+      'ingredientId': id,
+      'ingredientName': j['name'] ?? '',
+      'at': now,
+      'deltaMl': delta,
+      'reason': AdjustReason.opening.index,
+      'costPerMl': delta > 0 ? basis : 0,
+      'note': 'Opening balance, carried in from a pre-ledger backup.',
+    });
+  }
+  return out;
+}
+
 /// Builds a merge plan from a backup produced by another device.
 ///
 /// Rules, in order of precedence:
@@ -184,6 +244,10 @@ String _ingredientDiff(Ingredient local, Ingredient remote) {
 ///
 /// Ledger events (purchases, adjustments) are append-only, so they only
 /// ever add. Mix logs can be edited via ratings, so they can update too.
+///
+/// Backups older than [currentSchema] are brought forward first, exactly
+/// as a restore would. Merging is a peer-to-peer path, so the other device
+/// may simply be running an older build.
 MergePlan buildMergePlan({
   required String rawJson,
   required List<Ingredient> ingredients,
@@ -195,7 +259,43 @@ MergePlan buildMergePlan({
   required Settings settings,
   required int currentSchema,
 }) {
-  final (decoded, _) = decodeBackup(rawJson, currentSchema: currentSchema);
+  final (decoded, schema) = decodeBackup(rawJson, currentSchema: currentSchema);
+
+  final rawIngredients = [
+    for (final e in (decoded['ingredients'] as List? ?? const []))
+      e as Map<String, dynamic>,
+  ];
+  final rawAdjustments = [
+    for (final e in (decoded['adjustments'] as List? ?? const []))
+      e as Map<String, dynamic>,
+  ];
+
+  // Pre-v2 exports keep the vendor glued to the front of the name. Split
+  // it here or the same bottle arrives as a second, differently-named
+  // ingredient.
+  if (schema < 2) {
+    for (final j in rawIngredients) {
+      if (((j['brand'] as String?) ?? '').isNotEmpty) continue;
+      final (b, n) = splitBrand(j['name'] as String? ?? '');
+      j['brand'] = b;
+      j['name'] = n;
+    }
+  }
+
+  // Pre-v9 exports carry stock on the ingredient rather than in a ledger.
+  // Stock here is derived purely from ledger events, so without opening
+  // balances the other device's entire inventory would merge in at zero.
+  // The ids match what their own v9 migration will mint, so if they later
+  // upgrade and re-export, these dedupe instead of doubling.
+  if (schema < 9) {
+    rawAdjustments.addAll(
+      _openingBalancesFor(
+        ingredients: rawIngredients,
+        purchases: decoded['purchases'] as List? ?? const [],
+        mixLog: decoded['mixLog'] as List? ?? const [],
+      ),
+    );
+  }
 
   final items = <MergeItem>[];
 
@@ -270,7 +370,7 @@ MergePlan buildMergePlan({
 
   consider<Ingredient>(
     type: RecordType.ingredient,
-    raw: decoded['ingredients'] as List? ?? const [],
+    raw: rawIngredients,
     local: {for (final e in ingredients) e.id: e},
     parse: Ingredient.fromJson,
     labelOf: (e) => e.displayName,
@@ -316,7 +416,7 @@ MergePlan buildMergePlan({
 
   consider<StockAdjustment>(
     type: RecordType.adjustment,
-    raw: decoded['adjustments'] as List? ?? const [],
+    raw: rawAdjustments,
     local: {for (final e in adjustments) e.id: e},
     parse: StockAdjustment.fromJson,
     labelOf: (e) =>

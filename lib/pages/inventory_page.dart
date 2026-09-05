@@ -567,10 +567,16 @@ class _RestockDialogState extends State<_RestockDialog> {
 
     // Shipping is part of what the liquid actually cost you.
     final landed = (c ?? 0) + ship;
-    final newPerMl = valid ? landed / v : 0.0;
-    final denom = e.stockMl + (v ?? 0);
-    final blended = valid && denom > 0
-        ? (e.stockMl * e.costPerMl + v * newPerMl) / denom
+    // Derived by replaying the ledger with this purchase appended, so the
+    // preview agrees with the configured cost basis instead of always
+    // showing a moving average.
+    final blended = valid
+        ? widget.state.previewRestockBasis(
+            ingredientId: e.id,
+            volumeMl: v,
+            cost: c,
+            shippingCost: ship,
+          )
         : e.costPerMl;
 
     return AlertDialog(
