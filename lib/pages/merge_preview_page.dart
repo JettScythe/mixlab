@@ -115,6 +115,32 @@ class _MergePreviewPageState extends State<MergePreviewPage> {
                             color: theme.colorScheme.outline,
                           ),
                         ),
+                        if (plan.matchedByName > 0) ...[
+                          Gap.vSm,
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(
+                                Icons.link,
+                                size: 16,
+                                color: theme.colorScheme.primary,
+                              ),
+                              const SizedBox(width: Gap.xs),
+                              Expanded(
+                                child: Text(
+                                  '${plan.matchedByName} ingredient(s) matched '
+                                  'to yours by brand and name. The other '
+                                  'device knew them under different ids; '
+                                  'their stock and recipes point at your '
+                                  'copies instead of creating duplicates.',
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: theme.colorScheme.primary,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                       ],
                     ),
                   ),

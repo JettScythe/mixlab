@@ -86,9 +86,15 @@ class MergePlan {
     this.settingsDetail = '',
     this.remoteDevice = '',
     this.exportedAt,
+    this.matchedByName = 0,
   });
 
   final List<MergeItem> items;
+
+  /// Ingredients the other device knew under a different id, resolved to
+  /// an existing local one by brand and name. Surfaced so the review can
+  /// say why an expected "add" is missing.
+  final int matchedByName;
 
   /// Tombstones from the other side, folded in regardless of item choices
   /// so a delete cannot be half-applied.
@@ -232,6 +238,50 @@ List<Map<String, dynamic>> _openingBalancesFor({
   return out;
 }
 
+/// Rewrites every reference to a remote ingredient id that resolves to a
+/// different local id for the same bottle.
+///
+/// Aliasing the ingredient alone is not enough: a recipe, mix line,
+/// purchase or adjustment that still points at the remote id would arrive
+/// dangling, so the remap has to reach every record that names one.
+///
+/// The adjustment and purchase *record* ids are deliberately untouched.
+/// They identify the event, not the ingredient, and rewriting them would
+/// either collide two devices' independent restocks or break idempotency.
+void _applyIngredientAliases(
+  Map<String, String> aliases, {
+  required List<Map<String, dynamic>> ingredients,
+  required List<Map<String, dynamic>> recipes,
+  required List<Map<String, dynamic>> mixLog,
+  required List<Map<String, dynamic>> purchases,
+  required List<Map<String, dynamic>> adjustments,
+}) {
+  if (aliases.isEmpty) return;
+
+  for (final j in ingredients) {
+    final to = aliases[j['id']];
+    if (to != null) j['id'] = to;
+  }
+  for (final r in recipes) {
+    for (final f in (r['flavors'] as List? ?? const [])) {
+      final m = f as Map<String, dynamic>;
+      final to = aliases[m['ingredientId']];
+      if (to != null) m['ingredientId'] = to;
+    }
+  }
+  for (final l in mixLog) {
+    for (final line in (l['lines'] as List? ?? const [])) {
+      final m = line as Map<String, dynamic>;
+      final to = aliases[m['ingredientId']];
+      if (to != null) m['ingredientId'] = to;
+    }
+  }
+  for (final e in [...purchases, ...adjustments]) {
+    final to = aliases[e['ingredientId']];
+    if (to != null) e['ingredientId'] = to;
+  }
+}
+
 /// Builds a merge plan from a backup produced by another device.
 ///
 /// Rules, in order of precedence:
@@ -265,6 +315,18 @@ MergePlan buildMergePlan({
     for (final e in (decoded['ingredients'] as List? ?? const []))
       e as Map<String, dynamic>,
   ];
+  final rawRecipes = [
+    for (final e in (decoded['recipes'] as List? ?? const []))
+      e as Map<String, dynamic>,
+  ];
+  final rawMixLog = [
+    for (final e in (decoded['mixLog'] as List? ?? const []))
+      e as Map<String, dynamic>,
+  ];
+  final rawPurchases = [
+    for (final e in (decoded['purchases'] as List? ?? const []))
+      e as Map<String, dynamic>,
+  ];
   final rawAdjustments = [
     for (final e in (decoded['adjustments'] as List? ?? const []))
       e as Map<String, dynamic>,
@@ -291,11 +353,52 @@ MergePlan buildMergePlan({
     rawAdjustments.addAll(
       _openingBalancesFor(
         ingredients: rawIngredients,
-        purchases: decoded['purchases'] as List? ?? const [],
-        mixLog: decoded['mixLog'] as List? ?? const [],
+        purchases: rawPurchases,
+        mixLog: rawMixLog,
       ),
     );
   }
+
+  // Two installs that each typed in "TFA Strawberry (Ripe)" minted
+  // independent ids for the same bottle, so an id-only merge adds a
+  // duplicate and splits its stock across two entries. Match the leftovers
+  // on brand + name and rewrite the incoming references to point at the
+  // local record.
+  //
+  // Only ids absent locally are considered: an id present on both sides is
+  // already the same record by definition, and a rename must not be
+  // second-guessed into a merge with some other bottle.
+  final localById = {for (final e in ingredients) e.id: e};
+  final localByName = <String, Ingredient>{};
+  for (final e in ingredients) {
+    localByName.putIfAbsent(e.dedupKey, () => e);
+  }
+
+  final aliases = <String, String>{};
+  final claimed = <String>{};
+  for (final j in rawIngredients) {
+    final id = j['id'] as String?;
+    if (id == null || localById.containsKey(id)) continue;
+    final key = Ingredient.dedupKeyFor(
+      (j['brand'] as String?) ?? '',
+      (j['name'] as String?) ?? '',
+    );
+    if (key == '|') continue; // nothing to match on
+    final match = localByName[key];
+    // One local record can absorb only one remote id, or two remote
+    // duplicates would both alias onto it and collide.
+    if (match == null || !claimed.add(match.id)) continue;
+    aliases[id] = match.id;
+  }
+
+  _applyIngredientAliases(
+    aliases,
+    ingredients: rawIngredients,
+    recipes: rawRecipes,
+    mixLog: rawMixLog,
+    purchases: rawPurchases,
+    adjustments: rawAdjustments,
+  );
 
   final items = <MergeItem>[];
 
@@ -371,7 +474,7 @@ MergePlan buildMergePlan({
   consider<Ingredient>(
     type: RecordType.ingredient,
     raw: rawIngredients,
-    local: {for (final e in ingredients) e.id: e},
+    local: localById,
     parse: Ingredient.fromJson,
     labelOf: (e) => e.displayName,
     stampOf: (e) => e.syncStamp,
@@ -380,7 +483,7 @@ MergePlan buildMergePlan({
 
   consider<Recipe>(
     type: RecordType.recipe,
-    raw: decoded['recipes'] as List? ?? const [],
+    raw: rawRecipes,
     local: {for (final e in recipes) e.id: e},
     parse: Recipe.fromJson,
     labelOf: (e) => e.name,
@@ -390,7 +493,7 @@ MergePlan buildMergePlan({
 
   consider<MixLog>(
     type: RecordType.mixLog,
-    raw: decoded['mixLog'] as List? ?? const [],
+    raw: rawMixLog,
     local: {for (final e in mixLog) e.id: e},
     parse: MixLog.fromJson,
     labelOf: (e) => e.label,
@@ -405,7 +508,7 @@ MergePlan buildMergePlan({
 
   consider<Purchase>(
     type: RecordType.purchase,
-    raw: decoded['purchases'] as List? ?? const [],
+    raw: rawPurchases,
     local: {for (final e in purchases) e.id: e},
     parse: Purchase.fromJson,
     labelOf: (e) => '${e.ingredientName} +${e.volumeMl.toStringAsFixed(0)} mL',
@@ -511,5 +614,6 @@ MergePlan buildMergePlan({
     settingsDetail: settingsDetail,
     remoteDevice: decoded['deviceId'] as String? ?? 'unknown device',
     exportedAt: DateTime.tryParse(decoded['exportedAt'] as String? ?? ''),
+    matchedByName: aliases.length,
   );
 }

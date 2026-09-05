@@ -394,8 +394,12 @@ class _SettingsPageState extends State<SettingsPage> {
               _card(theme, 'Backup', [
                 const Text(
                   'Exports ingredients, recipes, restocks, mix history and '
-                  'settings as one JSON file. Import merges by id, so '
-                  're-importing the same file is safe.',
+                  'settings as one JSON file.\n\n'
+                  'Merge reviews another device\'s file and combines it with '
+                  'this one, matching by id and then by brand and name. '
+                  'Restore throws away everything here and puts the file in '
+                  'its place. Both are safe to repeat — the same file twice '
+                  'changes nothing the second time.',
                 ),
                 Gap.vMd,
                 Wrap(
@@ -422,10 +426,10 @@ class _SettingsPageState extends State<SettingsPage> {
                     OutlinedButton.icon(
                       onPressed: _merge,
                       icon: const Icon(Icons.merge),
-                      label: const Text('Merge '),
+                      label: const Text('Merge from another device'),
                     ),
                     OutlinedButton.icon(
-                      onPressed: () => _restore,
+                      onPressed: _restore,
                       icon: const Icon(Icons.settings_backup_restore),
                       label: const Text('Restore (replace all)'),
                     ),

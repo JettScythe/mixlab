@@ -114,6 +114,25 @@ class _CalculatorPageState extends State<CalculatorPage> {
     _baseMode = r.baseMode;
     _loadedRecipeId = r.id.startsWith('remix:') ? null : r.id;
 
+    // A recipe that names its bases is mixed from those, not from whatever
+    // happens to be selected. One that names none leaves the current
+    // selection alone, which is how recipes behaved before v12.
+    var missingBase = false;
+    for (final (wanted, kind, apply)
+        in <(String?, IngredientKind, void Function(String?))>[
+          (r.nicId, IngredientKind.nicotine, (v) => _nicId = v),
+          (r.pgId, IngredientKind.pg, (v) => _pgId = v),
+          (r.vgId, IngredientKind.vg, (v) => _vgId = v),
+        ]) {
+      if (wanted == null) continue;
+      final found = s.byId(wanted);
+      if (found != null && found.kind == kind) {
+        apply(wanted);
+      } else {
+        missingBase = true;
+      }
+    }
+
     for (final e in _rows) {
       e.dispose();
     }
@@ -140,6 +159,12 @@ class _CalculatorPageState extends State<CalculatorPage> {
       showToast(
         context,
         '$skipped ingredient(s) skipped — not found in inventory.',
+      );
+    } else if (missingBase) {
+      showToast(
+        context,
+        'A base this recipe was written for is no longer in your '
+        'inventory — using your current selection instead.',
       );
     }
   }
@@ -861,6 +886,13 @@ class _CalculatorPageState extends State<CalculatorPage> {
         targetVgPercent: _val(_vg),
         percentMode: _percentMode,
         baseMode: _baseMode,
+        // A recipe that pins its bases follows what is selected now; one
+        // that does not stays unpinned. Updating from the calculator
+        // should not quietly start pinning bases the user never chose to
+        // pin — the recipe editor is where that decision is made.
+        nicId: loaded.nicId == null ? null : _nicId,
+        pgId: loaded.pgId == null ? null : _pgId,
+        vgId: loaded.vgId == null ? null : _vgId,
         flavors: _currentFlavors(),
       ),
     );

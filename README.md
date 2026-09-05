@@ -22,6 +22,10 @@ ingredient's actual carrier, the weigh-along mode shows cumulative
 targets that shift when you overpour, and the mix log records what you
 actually weighed rather than what was planned.
 
+Stock works the same way. Every purchase, mix and correction is a ledger
+entry, so what you have on hand is derived from what actually happened
+and any entry can be undone without guessing at what it changed.
+
 
 
 ## Comparison
@@ -69,8 +73,11 @@ Rough positioning first:
 | Ingredient stash with stock levels | Yes | Partial | Yes | Yes | No |
 | Automatic deduction when a mix is logged | Yes | No | Yes | No | No |
 | Exact undo restoring the amounts deducted | Yes | No | No | No | No |
+| Full stock ledger with a running balance | Yes | No | No | No | No |
+| Adjustments with a reason (spill, evaporation, gift) | Yes | No | No | No | No |
 | Cost per bottle and per reference volume | Yes | Yes | Yes | No | No |
-| Restock log with weighted-average cost basis | Yes | No | No | No | No |
+| Choice of moving-average or FIFO cost basis | Yes | No | No | No | No |
+| Restock log with shipping folded into the basis | Yes | No | No | No | No |
 | Low-stock flags and filter | Yes | No | Yes | No | No |
 | Shortfall check before you start mixing | Yes | No | Partial | No | No |
 | Bottle, cap and shipping costs | Yes | No | Partial | No | No |
@@ -84,7 +91,9 @@ Rough positioning first:
 | Save and reload recipes | Yes | Yes | Yes | Yes | No |
 | Seeded with DIY classics | Yes | No | n/a | n/a | No |
 | Shared public recipe database | No | No | Yes | Yes | No |
-| Import from ELR or AllTheFlavors | No | No | n/a | n/a | No |
+| Import by pasting from ELR or AllTheFlavors | Yes | No | n/a | n/a | No |
+| Export a recipe as shareable plain text | Yes | No | Yes | Yes | No |
+| Recipe remembers which nic base and PG/VG it uses | Yes | No | No | No | No |
 | Edit a saved recipe in place | Yes | Yes | Yes | Yes | n/a |
 | Mix history with steep dates | Yes | No | Partial | No | No |
 | Tasting notes and ratings | Yes | No | Yes | Yes | No |
@@ -101,29 +110,44 @@ Rough positioning first:
 | No account required | Yes | Yes | No | No | Yes |
 | Data stored locally only | Yes | Yes | No | No | n/a |
 | Full JSON export and import | Yes | Partial | Partial | Partial | n/a |
+| Reviewable merge between two devices | Yes | No | n/a | n/a | n/a |
 | Versioned schema with migrations | Yes | No | n/a | n/a | n/a |
 | Open source | Yes | No | No | No | No |
 
-Where MixLab loses: no recipe community, no in-place recipe editing, no
-by-weight percentages, no salts or additive handling. If you mix from
-shared recipes and want a library to browse, ELR remains the better tool
-and the two work fine together — build there, mix here.
+Where MixLab loses: there is no recipe community, no library to browse,
+and no way to discover what other people are mixing. That is the whole
+reason ELR and AllTheFlavors exist, and MixLab does not try to replace
+them — build a recipe there, paste it in here, mix it by weight. The two
+work fine together.
+
+It is also younger and less proven than eJuice Me Up, which has been
+quietly correct for a decade.
 
 ## Features in detail
 
 - Weight-first calculation with per-ingredient density derived from kind
   and carrier VG percentage
+- Percentages by volume or by weight, and a max-VG mode
 - Inventory with brand-aware search, stock levels, low-stock filtering
   and duplicate prevention
-- Cost per mL, per bottle and per reference volume, with a
-  weighted-average basis that updates on restock
-- Pre-mix feasibility check listing exact shortfalls
+- Event-sourced stock: every purchase, mix and adjustment is a ledger
+  entry, so stock is derived rather than edited in place and any entry
+  can be undone
+- Stock adjustments carry a reason — spill, evaporation, gift, disposal —
+  so the ledger explains itself later
+- Cost per mL, per bottle and per reference volume, with a choice of
+  moving-average or FIFO basis that applies retroactively
+- Pre-mix feasibility check listing exact shortfalls, and a "what can I
+  make right now" capacity figure per recipe
 - Weigh-along mode with cumulative targets, tare toggle, back-stepping
   and a commit step that logs real weights
 - Mix history with steep-day counts, achieved nicotine and VG%, and
-  exact undo that restores what was deducted
-- Restock log with undo restoring the previous stock and cost basis
-- JSON export and import, merged by id so re-importing is safe
+  exact undo that reverses the ledger entry
+- Recipes that record which nicotine base and PG/VG they are mixed from
+- Paste-import from ELR, AllTheFlavors, spreadsheets and forum posts;
+  export any recipe back out as plain text
+- JSON export, plus a reviewable merge that combines another device's
+  backup with this one — every change can be declined individually
 - Recovery screen if stored data ever fails to load, with a raw-data
   dump so nothing is lost
 
@@ -206,8 +230,19 @@ dart format .
 Stored locally via `shared_preferences`, in the OS-standard location for
 each platform. No network calls, no telemetry, no account.
 
-Export from Settings before upgrading between betas. Import merges by
-id, so restoring the same file twice is harmless.
+Export from Settings before upgrading between betas. There are two ways
+back in:
+
+- **Merge** reviews another file against what is already here and
+  combines them. Records match by id, then by brand and name, so the same
+  bottle typed into two installs stays one ingredient. Every proposed
+  change can be declined before anything is written.
+- **Restore** discards everything local and replaces it with the file.
+
+Both are safe to repeat — the same file twice changes nothing the second
+time. Moving a backup between your own devices is the supported way to
+run MixLab on more than one machine; there is no server and nothing syncs
+in the background.
 
 The schema is versioned with forward migrations. Loading data from a
 newer build than the one you are running will refuse rather than
