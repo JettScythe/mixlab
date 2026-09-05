@@ -30,6 +30,25 @@ Ingredient flavor(String id, {double carrierVg = 0, double stock = 100}) =>
       bottleCost: 3, // 0.10 per mL
     );
 
+/// Adds an ingredient to [s] and seeds its stock through the ledger, which
+/// since v9 is the only way stock enters. Assigning stockMl directly no
+/// longer survives a recompute.
+Ingredient addStocked(AppState s, Ingredient e, double stockMl) {
+  e.stockMl = 0;
+  s.ingredients.add(e);
+  if (stockMl != 0) {
+    s.addAdjustment(
+      ingredientId: e.id,
+      deltaMl: stockMl,
+      reason: AdjustReason.opening,
+      costPerMl: e.bottleSizeMl > 0 ? e.bottleCost / e.bottleSizeMl : 0,
+    );
+  } else {
+    s.recomputeStock();
+  }
+  return e;
+}
+
 /// Waits for an auto-loading AppState without hanging the suite forever.
 Future<void> waitReady(AppState s) async {
   for (var i = 0; i < 200 && !s.isReady; i++) {
@@ -401,8 +420,8 @@ void main() {
     test('weighed totals feed logMix and deduct the real amount', () {
       SharedPreferences.setMockInitialValues({});
       final s = AppState(autoLoad: false);
-      final f = flavor('a', stock: 100);
-      s.ingredients.add(f);
+      final f = addStocked(s, flavor('a'), 100);
+
       final r = calculateMix(
         amountMl: 100,
         targetNic: 0,
@@ -584,114 +603,237 @@ void main() {
     });
   });
 
-  group('purchases (bug 9)', () {
-    Ingredient vg() => Ingredient(
-      id: 'v',
-      name: 'VG',
-      kind: IngredientKind.vg,
-      density: 1.261,
-      bottleSizeMl: 100,
-      bottleCost: 10, // 0.10/mL
-      stockMl: 100,
-    );
-
-    test('weighted average blends the cost basis', () {
+  group('event-sourced stock', () {
+    AppState seeded() {
       SharedPreferences.setMockInitialValues({});
       final s = AppState(autoLoad: false);
-      final e = vg();
-      s.ingredients.add(e);
+      s.ingredients.add(flavor('a', stock: 0));
+      s.addAdjustment(
+        ingredientId: 'a',
+        deltaMl: 100,
+        reason: AdjustReason.opening,
+        costPerMl: 0.1,
+      );
+      return s;
+    }
 
-      // 100 mL at 0.10 + 100 mL at 0.20 -> 0.15/mL
-      s.recordPurchase(ingredientId: 'v', volumeMl: 100, cost: 20);
-      expect(e.stockMl, closeTo(200, 1e-9));
-      expect(e.costPerMl, closeTo(0.15, 1e-9));
+    test('stock is derived from the ledger, not assigned', () {
+      final s = seeded();
+      expect(s.byId('a')!.stockMl, closeTo(100, 1e-9));
+
+      s.recordPurchase(ingredientId: 'a', volumeMl: 30, cost: 4.50);
+      expect(s.byId('a')!.stockMl, closeTo(130, 1e-9));
+
+      s.addAdjustment(
+        ingredientId: 'a',
+        deltaMl: -5,
+        reason: AdjustReason.spill,
+      );
+      expect(s.byId('a')!.stockMl, closeTo(125, 1e-9));
     });
 
-    test('replace mode adopts the new price outright', () {
-      SharedPreferences.setMockInitialValues({});
-      final s = AppState(autoLoad: false);
-      final e = vg();
-      s.ingredients.add(e);
+    test('mixing deducts and undo restores by replay', () {
+      final s = seeded();
+      final f = s.byId('a')!;
+      final log = s.logMix(
+        calculateMix(
+          amountMl: 100,
+          targetNic: 0,
+          targetVgPercent: 50,
+          settings: s.settings,
+          flavors: [(f, 10)],
+        ),
+      );
+      expect(f.stockMl, closeTo(90, 1e-9));
+
+      s.undoMix(log.id);
+      expect(f.stockMl, closeTo(100, 1e-9));
+      expect(s.mixLog, isEmpty);
+    });
+
+    test('two mixes both survive — the old model lost one', () {
+      final s = seeded();
+      final f = s.byId('a')!;
+      MixResult mix() => calculateMix(
+        amountMl: 100,
+        targetNic: 0,
+        targetVgPercent: 50,
+        settings: s.settings,
+        flavors: [(f, 10)],
+      );
+      s.logMix(mix());
+      s.logMix(mix());
+      expect(f.stockMl, closeTo(80, 1e-9));
+    });
+
+    test('stock goes negative rather than flooring at zero', () {
+      final s = seeded();
+      final f = s.byId('a')!;
+      s.logMix(
+        calculateMix(
+          amountMl: 100,
+          targetNic: 0,
+          targetVgPercent: 50,
+          settings: s.settings,
+          flavors: [(f, 150)], // 150 mL of a 100 mL supply
+        ),
+      );
+      expect(f.stockMl, lessThan(0));
+      expect(f.stockIsNegative, isTrue);
+      expect(s.negativeStock.single.id, 'a');
+    });
+
+    test('setStockTo writes the difference', () {
+      final s = seeded();
+      s.setStockTo('a', 42);
+      expect(s.byId('a')!.stockMl, closeTo(42, 1e-9));
+      expect(s.adjustments.first.deltaMl, closeTo(-58, 1e-9));
+    });
+
+    test('cost basis is the weighted average of the whole ledger', () {
+      final s = seeded(); // 100 mL at 0.10
+      s.recordPurchase(ingredientId: 'a', volumeMl: 100, cost: 20);
+      // (100*0.10 + 100*0.20) / 200 = 0.15
+      expect(s.byId('a')!.costPerMl, closeTo(0.15, 1e-9));
 
       s.recordPurchase(
-        ingredientId: 'v',
+        ingredientId: 'a',
         volumeMl: 100,
         cost: 20,
-        useWeightedAverage: false,
+        shippingCost: 10,
       );
-      expect(e.costPerMl, closeTo(0.20, 1e-9));
+      // (10 + 20 + 30) / 300 = 0.20
+      expect(s.byId('a')!.costPerMl, closeTo(0.20, 1e-9));
     });
 
-    test('undo restores stock and basis exactly', () {
-      SharedPreferences.setMockInitialValues({});
-      final s = AppState(autoLoad: false);
-      final e = vg();
-      s.ingredients.add(e);
+    test('undoing a purchase removes its effect on stock and cost', () {
+      final s = seeded();
+      final p = s.recordPurchase(ingredientId: 'a', volumeMl: 100, cost: 20);
+      s.undoPurchase(p.id);
+      expect(s.byId('a')!.stockMl, closeTo(100, 1e-9));
+      expect(s.byId('a')!.costPerMl, closeTo(0.10, 1e-9));
+    });
 
-      final p = s.recordPurchase(ingredientId: 'v', volumeMl: 100, cost: 20);
-      expect(s.undoPurchase(p.id), isTrue);
-      expect(e.stockMl, closeTo(100, 1e-9));
-      expect(e.costPerMl, closeTo(0.10, 1e-9));
-      expect(s.purchases, isEmpty);
+    test('deleting and restoring an ingredient keeps its stock', () {
+      final s = seeded();
+      final removed = s.removeIngredient('a')!;
+      s.restoreIngredient(removed.$1, removed.$2);
+      // Events were never touched, so the balance comes straight back.
+      expect(s.byId('a')!.stockMl, closeTo(100, 1e-9));
+    });
+
+    test('ledger reports a running balance oldest first', () {
+      final s = seeded();
+      final f = s.byId('a')!;
+      s.recordPurchase(ingredientId: 'a', volumeMl: 50, cost: 5);
+      s.logMix(
+        calculateMix(
+          amountMl: 100,
+          targetNic: 0,
+          targetVgPercent: 50,
+          settings: s.settings,
+          flavors: [(f, 10)],
+        ),
+      );
+
+      final ledger = s.ledgerFor('a');
+      expect(ledger.length, 3);
+      expect(ledger.first.deltaMl, closeTo(100, 1e-9)); // opening
+      expect(ledger.last.balanceAfter, closeTo(f.stockMl, 1e-9));
     });
   });
 
-  group('mix log', () {
-    setUp(() => SharedPreferences.setMockInitialValues({}));
+  group('schema v9 migration', () {
+    test('opening balances make derived stock equal the old value', () async {
+      SharedPreferences.setMockInitialValues({
+        'schema_version': 8,
+        'ingredients_v1': jsonEncode([
+          {
+            'id': 'a',
+            'name': 'Strawberry',
+            'brand': 'TFA',
+            'kind': IngredientKind.flavor.index,
+            'density': 1.0,
+            'stockMl': 22.5,
+            'bottleSizeMl': 30,
+            'bottleCost': 3,
+          },
+        ]),
+        'purchases_v1': jsonEncode([
+          {
+            'id': 'p1',
+            'ingredientId': 'a',
+            'ingredientName': 'TFA Strawberry',
+            'at': '2026-01-01T00:00:00.000',
+            'volumeMl': 30,
+            'cost': 3,
+          },
+        ]),
+        'mixlog_v1': jsonEncode([
+          {
+            'id': 'l1',
+            'mixedAt': '2026-01-02T00:00:00.000',
+            'label': 'Test',
+            'lines': [
+              {
+                'name': 'TFA Strawberry',
+                'ingredientId': 'a',
+                'requestedMl': 7.5,
+                'deductedMl': 7.5,
+              },
+            ],
+          },
+        ]),
+      });
 
-    test('logMix deducts and undoMix restores exactly', () {
-      final s = AppState(autoLoad: false);
-      final f = flavor('a', stock: 10);
-      s.ingredients.add(f);
-      final r = calculateMix(
-        amountMl: 100,
-        targetNic: 0,
-        targetVgPercent: 50,
-        settings: s.settings,
-        flavors: [(f, 5)],
-      );
-      final log = s.logMix(r, label: 'Test');
-      expect(f.stockMl, closeTo(5, 1e-9));
-      expect(s.mixLog.length, 1);
-      expect(s.undoMix(log.id), isTrue);
-      expect(f.stockMl, closeTo(10, 1e-9));
-      expect(s.mixLog, isEmpty);
+      final s = AppState();
+      await waitReady(s);
+
+      // Replay gives 30 - 7.5 = 22.5, which already matches, so no opening
+      // balance is needed and stock is unchanged.
+      expect(s.byId('a')!.stockMl, closeTo(22.5, 1e-9));
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getInt('schema_version'), 9);
     });
 
-    test('short stock floors at zero and undo does not over-restore', () {
-      final s = AppState(autoLoad: false);
-      final f = flavor('a', stock: 2);
-      s.ingredients.add(f);
-      final r = calculateMix(
-        amountMl: 100,
-        targetNic: 0,
-        targetVgPercent: 50,
-        settings: s.settings,
-        flavors: [(f, 10)], // wants 10 mL, only 2 available
-      );
-      final log = s.logMix(r);
-      expect(f.stockMl, 0);
-      expect(log.lines.first.requestedMl, closeTo(10, 1e-9));
-      expect(log.lines.first.deductedMl, closeTo(2, 1e-9));
-      s.undoMix(log.id);
-      expect(f.stockMl, closeTo(2, 1e-9)); // not 10
+    test('unexplained stock becomes an opening balance', () async {
+      SharedPreferences.setMockInitialValues({
+        'schema_version': 8,
+        'ingredients_v1': jsonEncode([
+          {
+            'id': 'v',
+            'name': 'VG',
+            'kind': IngredientKind.vg.index,
+            'density': 1.261,
+            'stockMl': 500,
+            'bottleSizeMl': 500,
+            'bottleCost': 14,
+          },
+        ]),
+      });
+
+      final s = AppState();
+      await waitReady(s);
+
+      expect(s.byId('v')!.stockMl, closeTo(500, 1e-9));
+      expect(s.adjustments.single.reason, AdjustReason.opening);
+      expect(s.adjustments.single.deltaMl, closeTo(500, 1e-9));
+      // Cost basis carries across rather than resetting to zero.
+      expect(s.byId('v')!.costPerMl, closeTo(0.028, 1e-3));
     });
 
-    test('deleteLogEntry leaves stock alone', () {
-      final s = AppState(autoLoad: false);
-      final f = flavor('a', stock: 10);
-      s.ingredients.add(f);
-      final r = calculateMix(
-        amountMl: 100,
-        targetNic: 0,
-        targetVgPercent: 50,
-        settings: s.settings,
-        flavors: [(f, 5)],
+    test('a fresh install seeds stock through the ledger', () async {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState();
+      await waitReady(s);
+
+      expect(s.adjustments, isNotEmpty);
+      expect(
+        s.adjustments.every((a) => a.reason == AdjustReason.opening),
+        isTrue,
       );
-      final log = s.logMix(r);
-      s.deleteLogEntry(log.id);
-      expect(s.mixLog, isEmpty);
-      expect(f.stockMl, closeTo(5, 1e-9));
+      final vg = s.ingredients.firstWhere((e) => e.name == 'VG');
+      expect(vg.stockMl, closeTo(500, 1e-9));
     });
   });
 
@@ -1723,16 +1865,18 @@ some line with no numbers at all
     test('undo still restores the old basis exactly', () {
       SharedPreferences.setMockInitialValues({});
       final s = AppState(autoLoad: false);
-      final e = Ingredient(
-        id: 'v',
-        name: 'VG',
-        kind: IngredientKind.vg,
-        density: 1.261,
-        bottleSizeMl: 100,
-        bottleCost: 10,
-        stockMl: 100,
+      final e = addStocked(
+        s,
+        Ingredient(
+          id: 'v',
+          name: 'VG',
+          kind: IngredientKind.vg,
+          density: 1.261,
+          bottleSizeMl: 100,
+          bottleCost: 10, // opening balance carries 0.10/mL
+        ),
+        100,
       );
-      s.ingredients.add(e);
 
       final p = s.recordPurchase(
         ingredientId: 'v',
@@ -1740,6 +1884,8 @@ some line with no numbers at all
         cost: 10,
         shippingCost: 8,
       );
+      expect(e.costPerMl, closeTo(0.14, 1e-9)); // (10 + 18) / 200
+
       s.undoPurchase(p.id);
       expect(e.stockMl, closeTo(100, 1e-9));
       expect(e.costPerMl, closeTo(0.10, 1e-9));

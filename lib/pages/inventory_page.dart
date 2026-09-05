@@ -7,6 +7,7 @@ import '../widgets/empty_state.dart';
 import '../widgets/ingredient_dialog.dart';
 import '../widgets/ingredient_picker.dart';
 import '../widgets/toast.dart';
+import 'stock_history_page.dart';
 
 class InventoryPage extends StatefulWidget {
   const InventoryPage({super.key, required this.state});
@@ -19,6 +20,7 @@ class InventoryPage extends StatefulWidget {
 class _InventoryPageState extends State<InventoryPage> {
   final _search = TextEditingController();
   bool _lowOnly = false;
+  bool _negativeOnly = false;
   String? _brand;
   IngredientKind? _kind;
 
@@ -29,6 +31,14 @@ class _InventoryPageState extends State<InventoryPage> {
     _search.dispose();
     super.dispose();
   }
+
+  void _clearFilters() => setState(() {
+    _search.clear();
+    _lowOnly = false;
+    _negativeOnly = false;
+    _brand = null;
+    _kind = null;
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -46,16 +56,20 @@ class _InventoryPageState extends State<InventoryPage> {
     }
     if (_kind != null) items = items.where((e) => e.kind == _kind).toList();
     if (_brand != null) items = items.where((e) => e.brand == _brand).toList();
-    if (_lowOnly) {
+    if (_negativeOnly) {
+      items = items.where((e) => e.stockIsNegative).toList();
+    } else if (_lowOnly) {
       items = items.where((e) => e.stockMl <= set.lowStockMl).toList();
     }
 
     final brands = state.brands;
     final suspect = state.suspectDensities;
+    final negative = state.negativeStock;
     final filtered =
         _kind != null ||
         _brand != null ||
         _lowOnly ||
+        _negativeOnly ||
         _search.text.trim().isNotEmpty;
 
     return Padding(
@@ -80,7 +94,10 @@ class _InventoryPageState extends State<InventoryPage> {
               ),
             ],
           ),
+
+          if (negative.isNotEmpty) _negativeBanner(theme, negative.length),
           if (suspect.isNotEmpty) _densityBanner(theme, suspect),
+
           Gap.vMd,
           Row(
             children: [
@@ -104,10 +121,14 @@ class _InventoryPageState extends State<InventoryPage> {
               FilterChip(
                 label: const Text('Low stock'),
                 selected: _lowOnly,
-                onSelected: (v) => setState(() => _lowOnly = v),
+                onSelected: (v) => setState(() {
+                  _lowOnly = v;
+                  if (v) _negativeOnly = false;
+                }),
               ),
             ],
           ),
+
           Gap.vSm,
           SizedBox(
             height: 40,
@@ -134,6 +155,7 @@ class _InventoryPageState extends State<InventoryPage> {
               ],
             ),
           ),
+
           if (brands.isNotEmpty) ...[
             Gap.vXs,
             SizedBox(
@@ -164,6 +186,7 @@ class _InventoryPageState extends State<InventoryPage> {
               ),
             ),
           ],
+
           Gap.vSm,
           Text(
             '${items.length} of ${state.ingredients.length} shown',
@@ -172,6 +195,7 @@ class _InventoryPageState extends State<InventoryPage> {
             ),
           ),
           Gap.vXs,
+
           Expanded(
             child: items.isEmpty
                 ? (filtered
@@ -180,12 +204,7 @@ class _InventoryPageState extends State<InventoryPage> {
                           title: 'Nothing matches',
                           message: 'Try clearing the filters.',
                           actionLabel: 'Clear filters',
-                          onAction: () => setState(() {
-                            _search.clear();
-                            _lowOnly = false;
-                            _brand = null;
-                            _kind = null;
-                          }),
+                          onAction: _clearFilters,
                         )
                       : EmptyState(
                           icon: Icons.inventory_2_outlined,
@@ -205,6 +224,38 @@ class _InventoryPageState extends State<InventoryPage> {
       ),
     );
   }
+
+  Widget _negativeBanner(ThemeData theme, int count) => Container(
+    margin: const EdgeInsets.only(top: Gap.md),
+    padding: const EdgeInsets.all(Gap.md),
+    decoration: BoxDecoration(
+      color: theme.colorScheme.errorContainer,
+      borderRadius: BorderRadius.circular(8),
+    ),
+    child: Row(
+      children: [
+        Icon(Icons.error_outline, color: theme.colorScheme.onErrorContainer),
+        Gap.hSm,
+        Expanded(
+          child: Text(
+            '$count ingredient(s) have negative stock — the ledger says more '
+            'went out than came in. Usually an unlogged purchase.',
+            style: TextStyle(color: theme.colorScheme.onErrorContainer),
+          ),
+        ),
+        TextButton(
+          onPressed: () => setState(() {
+            _search.clear();
+            _kind = null;
+            _brand = null;
+            _lowOnly = false;
+            _negativeOnly = true;
+          }),
+          child: const Text('Show'),
+        ),
+      ],
+    ),
+  );
 
   Widget _densityBanner(ThemeData theme, List<Ingredient> suspect) => Container(
     margin: const EdgeInsets.only(top: Gap.md),
@@ -265,15 +316,27 @@ class _InventoryPageState extends State<InventoryPage> {
 
   Widget _tile(ThemeData theme, Ingredient e) {
     final set = state.settings;
-    final low = e.stockMl <= set.lowStockMl;
+    final low = !e.stockIsNegative && e.stockMl <= set.lowStockMl;
     final isNic = e.kind == IngredientKind.nicotine;
 
     return Card(
       child: ListTile(
+        // Tapping opens the full stock ledger for this ingredient.
+        onTap: () => Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => StockHistoryPage(state: state, ingredientId: e.id),
+          ),
+        ),
         leading: e.brand.isEmpty
             ? Icon(
-                low ? Icons.error_outline : Icons.water_drop_outlined,
-                color: low ? theme.colorScheme.error : null,
+                e.stockIsNegative
+                    ? Icons.error_outline
+                    : (low
+                          ? Icons.warning_amber_rounded
+                          : Icons.water_drop_outlined),
+                color: e.stockIsNegative
+                    ? theme.colorScheme.error
+                    : (low ? theme.colorScheme.tertiary : null),
               )
             : Tooltip(
                 message: knownBrands[e.brand] ?? e.brand,
@@ -314,29 +377,28 @@ class _InventoryPageState extends State<InventoryPage> {
         ),
         subtitle: Text(
           '${kindLabel(e.kind)} • '
-          '${e.stockMl.toStringAsFixed(1)} mL '
+          '${e.stockMl.toStringAsFixed(1)} mL'
+          '${e.stockIsNegative ? ' (negative)' : ''} '
           '(${e.stockGrams.toStringAsFixed(1)} g) on hand • '
           '${moneyPerMl(e.costPerMl, set)}'
-          '${e.avgCostPerMl > 0 ? ' (avg)' : ''}'
           '${isNic ? ' • ${e.nicStrength.toStringAsFixed(0)} ${nicUnitLabel(e.nicUnit)}'
                     '${e.nicUnit == NicUnit.perGram ? ' (${e.nicMgPerMl.toStringAsFixed(0)} mg/mL)' : ''}' : ''}',
+          style: e.stockIsNegative
+              ? TextStyle(color: theme.colorScheme.error)
+              : null,
         ),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (low)
-              Padding(
-                padding: const EdgeInsets.only(right: Gap.xs),
-                child: Icon(
-                  Icons.error_outline,
-                  size: 18,
-                  color: theme.colorScheme.error,
-                ),
-              ),
             IconButton(
               icon: const Icon(Icons.add_shopping_cart_outlined),
               tooltip: 'Restock',
               onPressed: () => _restock(e),
+            ),
+            IconButton(
+              icon: const Icon(Icons.tune),
+              tooltip: 'Adjust stock',
+              onPressed: () => _adjust(e),
             ),
             IconButton(
               icon: const Icon(Icons.edit_outlined),
@@ -371,6 +433,11 @@ class _InventoryPageState extends State<InventoryPage> {
     );
   }
 
+  Future<void> _adjust(Ingredient e) async {
+    final done = await showAdjustDialog(context, state: state, ingredient: e);
+    if (done == true && mounted) showToast(context, 'Stock adjusted.');
+  }
+
   Future<void> _confirmDelete(Ingredient e) async {
     final usedBy = state.recipesUsing(e.id);
     final mixes = state.mixesUsing(e.id);
@@ -403,8 +470,8 @@ class _InventoryPageState extends State<InventoryPage> {
             if (mixes > 0) ...[
               Gap.vSm,
               Text(
-                '$mixes logged mix(es) reference it; undoing those will no '
-                'longer restore its stock.',
+                '$mixes logged mix(es) reference it. Its ledger is kept, so '
+                'undoing the delete restores its stock exactly.',
               ),
             ],
           ],
@@ -448,6 +515,9 @@ class _InventoryPageState extends State<InventoryPage> {
   }
 }
 
+/// Restock dialog. Cost basis is now the weighted average of the whole
+/// ledger, so there is no longer a "replace the basis" option — removing a
+/// purchase and re-adding it is the way to correct a mistake.
 class _RestockDialog extends StatefulWidget {
   const _RestockDialog({required this.state, required this.ingredient});
   final AppState state;
@@ -459,7 +529,6 @@ class _RestockDialog extends StatefulWidget {
 
 class _RestockDialogState extends State<_RestockDialog> {
   late final TextEditingController vol, cost, shipping;
-  bool weighted = true;
 
   @override
   void initState() {
@@ -484,8 +553,10 @@ class _RestockDialogState extends State<_RestockDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final e = widget.ingredient;
     final set = widget.state.settings;
+
     final v = parseNum(vol.text);
     final c = parseNum(cost.text);
     final ship = parseNum(shipping.text) ?? 0;
@@ -498,7 +569,6 @@ class _RestockDialogState extends State<_RestockDialog> {
     final blended = valid && denom > 0
         ? (e.stockMl * e.costPerMl + v * newPerMl) / denom
         : e.costPerMl;
-    final resultBasis = weighted ? blended : newPerMl;
 
     return AlertDialog(
       title: Text('Restock ${e.displayName}'),
@@ -559,29 +629,33 @@ class _RestockDialogState extends State<_RestockDialog> {
                 ),
               ),
               Gap.vMd,
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Blend with existing stock'),
-                subtitle: const Text(
-                  'Weighted average cost basis. Off: this purchase price '
-                  'replaces the basis.',
+              Container(
+                padding: const EdgeInsets.all(Gap.md),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(8),
                 ),
-                value: weighted,
-                onChanged: (x) => setState(() => weighted = x),
+                child: Column(
+                  children: [
+                    _row(
+                      'Stock',
+                      '${e.stockMl.toStringAsFixed(1)} mL',
+                      '${(e.stockMl + (v ?? 0)).toStringAsFixed(1)} mL',
+                    ),
+                    _row(
+                      'Cost basis',
+                      moneyPerMl(e.costPerMl, set),
+                      moneyPerMl(blended, set),
+                    ),
+                    if (ship > 0)
+                      _row(
+                        'Landed cost',
+                        money(c ?? 0, set),
+                        money(landed, set),
+                      ),
+                  ],
+                ),
               ),
-              const Divider(),
-              _row(
-                'Stock',
-                '${e.stockMl.toStringAsFixed(1)} mL',
-                '${(e.stockMl + (v ?? 0)).toStringAsFixed(1)} mL',
-              ),
-              _row(
-                'Cost basis',
-                moneyPerMl(e.costPerMl, set),
-                moneyPerMl(resultBasis, set),
-              ),
-              if (ship > 0)
-                _row('Landed cost', money(c ?? 0, set), money(landed, set)),
             ],
           ),
         ),
@@ -601,7 +675,6 @@ class _RestockDialogState extends State<_RestockDialog> {
                     volumeMl: v,
                     cost: c,
                     shippingCost: ship,
-                    useWeightedAverage: weighted,
                   ),
                 ),
           child: const Text('Record'),

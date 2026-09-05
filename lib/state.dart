@@ -23,7 +23,8 @@ class AppState extends ChangeNotifier {
   static const _kRecipes = 'recipes_v1';
   static const _kMixLog = 'mixlog_v1';
   static const _kPurchases = 'purchases_v1';
-  static const currentSchema = 8;
+  static const _kAdjustments = 'adjustments_v1';
+  static const currentSchema = 9;
 
   static const _allKeys = [
     _kSchema,
@@ -32,12 +33,14 @@ class AppState extends ChangeNotifier {
     _kRecipes,
     _kMixLog,
     _kPurchases,
+    _kAdjustments,
   ];
 
   final List<Ingredient> ingredients = [];
   final List<Recipe> recipes = [];
   final List<MixLog> mixLog = []; // newest first
   final List<Purchase> purchases = []; // newest first
+  final List<StockAdjustment> adjustments = []; // newest first
   Settings settings = Settings();
 
   bool _ready = false;
@@ -74,6 +77,7 @@ class AppState extends ChangeNotifier {
       recipes.clear();
       mixLog.clear();
       purchases.clear();
+      adjustments.clear();
 
       final raw = prefs.getString(_kIngredients);
       if (raw != null) {
@@ -123,6 +127,20 @@ class AppState extends ChangeNotifier {
         );
         purchases.sort((a, b) => b.at.compareTo(a.at));
       }
+
+      final araw = prefs.getString(_kAdjustments);
+      if (araw != null) {
+        adjustments.addAll(
+          (jsonDecode(araw) as List).map(
+            (e) => StockAdjustment.fromJson(e as Map<String, dynamic>),
+          ),
+        );
+        adjustments.sort((a, b) => b.at.compareTo(a.at));
+      }
+
+      // Stock is derived, so the persisted snapshot is authoritative only
+      // until the ledger has been replayed.
+      recomputeStock();
     } catch (e, st) {
       loadError = e.toString();
       debugPrint('AppState.load failed: $e');
@@ -148,13 +166,15 @@ class AppState extends ChangeNotifier {
       return;
     }
 
+    List<Map<String, dynamic>> decode(String? raw) => raw == null
+        ? <Map<String, dynamic>>[]
+        : (jsonDecode(raw) as List).cast<Map<String, dynamic>>().toList();
+
     if (v < 2) {
       // v2: pull recognised brand shorthands out of the combined name.
       final raw = prefs.getString(_kIngredients);
       if (raw != null) {
-        final list = (jsonDecode(raw) as List)
-            .cast<Map<String, dynamic>>()
-            .toList();
+        final list = decode(raw);
         for (final j in list) {
           final existing = j['brand'] as String?;
           if (existing != null && existing.isNotEmpty) continue;
@@ -170,25 +190,23 @@ class AppState extends ChangeNotifier {
 
     if (v < 3) {
       // v3 adds avgCostPerMl, purchases, and achieved nic/VG on mix logs.
-      // All are additive with safe defaults, so no transform is needed.
+      // All additive with safe defaults.
       v = 3;
     }
+
     if (v < 4) {
-      // v4 adds recipeId, rating and tasting notes to mix logs. The new
-      // fields default safely, but old entries can often be linked to a
-      // recipe by matching the label they were mixed under.
+      // v4 adds recipeId, rating and tasting notes to mix logs. Old
+      // entries can often be linked to a recipe by matching the label
+      // they were mixed under.
       final rawLog = prefs.getString(_kMixLog);
       final rawRec = prefs.getString(_kRecipes);
       if (rawLog != null && rawRec != null) {
         final byName = <String, String>{};
-        for (final r
-            in (jsonDecode(rawRec) as List).cast<Map<String, dynamic>>()) {
+        for (final r in decode(rawRec)) {
           final n = (r['name'] as String? ?? '').trim().toLowerCase();
           if (n.isNotEmpty) byName.putIfAbsent(n, () => r['id'] as String);
         }
-        final logs = (jsonDecode(rawLog) as List)
-            .cast<Map<String, dynamic>>()
-            .toList();
+        final logs = decode(rawLog);
         var linked = 0;
         for (final l in logs) {
           if (l['recipeId'] != null) continue;
@@ -205,41 +223,98 @@ class AppState extends ChangeNotifier {
       }
       v = 4;
     }
+
     if (v < 5) {
-      // v5 adds additive/thinner ingredient kinds and per-recipe percent
-      // mode. Both are additive with safe defaults, so no transform runs —
-      // the bump exists so an older build refuses to import v5 data rather
-      // than crashing on an unknown enum index. flavor density now defaults to PG density, since nearly all
-      // concentrates are PG-based. Only move it if the old default was
-      // never changed — a measured value stays.
-      final raw = prefs.getString(_kSettings);
-      if (raw != null) {
-        final j = jsonDecode(raw) as Map<String, dynamic>;
-        final fd = (j['flavorDensity'] as num?)?.toDouble();
-        if (fd != null && (fd - 1.0).abs() < 1e-9) {
-          j['flavorDensity'] = kFlavorDensity;
-          await prefs.setString(_kSettings, jsonEncode(j));
-          debugPrint('Flavor density default moved to $kFlavorDensity (v6).');
-        }
-      }
+      // v5 adds additive/thinner kinds and per-recipe percent mode. The
+      // bump exists so an older build refuses v5 data rather than crashing
+      // on an unknown enum index.
       v = 5;
     }
+
     if (v < 6) {
       // v6 adds Recipe.baseMode. Existing recipes were mixed to their
-      // stored ratio, which is the default, so no transform is needed.
+      // stored ratio, which is the default.
       v = 6;
     }
+
     if (v < 7) {
       // v7 adds nicotine strength units and the salt flag. Existing bases
-      // were all mg/mL, which is the default, so no transform is needed.
-      // The bump stops an older build reading a mg/g base as mg/mL.
+      // were all mg/mL, which is the default. The bump stops an older
+      // build reading a mg/g base as mg/mL.
       v = 7;
     }
+
     if (v < 8) {
       // v8 adds hardware costs on mixes and shipping on purchases. Both
       // default to zero, so existing figures are unchanged.
       v = 8;
     }
+
+    if (v < 9) {
+      // v9 makes stock derived from an append-only ledger. Existing
+      // stockMl already reflects past purchases and mixes, so replaying
+      // those alone would double-count or lose history. Instead, replay
+      // what the ledger gives, then write one opening-balance adjustment
+      // per ingredient for the difference — so derived stock comes out
+      // exactly equal to what the user sees today.
+      final rawIng = prefs.getString(_kIngredients);
+      if (rawIng != null) {
+        final ings = decode(rawIng);
+
+        final replayed = <String, double>{};
+        for (final p in decode(prefs.getString(_kPurchases))) {
+          final id = p['ingredientId'] as String?;
+          if (id == null) continue;
+          replayed[id] =
+              (replayed[id] ?? 0) + ((p['volumeMl'] as num?)?.toDouble() ?? 0);
+        }
+        for (final l in decode(prefs.getString(_kMixLog))) {
+          for (final line in (l['lines'] as List? ?? const [])) {
+            final m = line as Map<String, dynamic>;
+            final id = m['ingredientId'] as String?;
+            if (id == null) continue;
+            replayed[id] =
+                (replayed[id] ?? 0) -
+                ((m['requestedMl'] as num?)?.toDouble() ?? 0);
+          }
+        }
+
+        final now = DateTime.now().toIso8601String();
+        final opening = <Map<String, dynamic>>[];
+        for (final j in ings) {
+          final id = j['id'] as String;
+          final current = (j['stockMl'] as num?)?.toDouble() ?? 0;
+          final delta = current - (replayed[id] ?? 0);
+          if (delta.abs() < 1e-9) continue;
+
+          // Carry the existing cost basis so per-mL costs do not reset.
+          final avg = (j['avgCostPerMl'] as num?)?.toDouble() ?? 0;
+          final size = (j['bottleSizeMl'] as num?)?.toDouble() ?? 0;
+          final price = (j['bottleCost'] as num?)?.toDouble() ?? 0;
+          final basis = avg > 0 ? avg : (size > 0 ? price / size : 0.0);
+
+          opening.add({
+            'id': 'opening-$id',
+            'ingredientId': id,
+            'ingredientName': j['name'] ?? '',
+            'at': now,
+            'deltaMl': delta,
+            'reason': AdjustReason.opening.index,
+            'costPerMl': delta > 0 ? basis : 0,
+            'note': 'Opening balance, recorded when stock became a ledger.',
+          });
+        }
+
+        if (opening.isNotEmpty) {
+          final existing = decode(prefs.getString(_kAdjustments))
+            ..addAll(opening);
+          await prefs.setString(_kAdjustments, jsonEncode(existing));
+          debugPrint('Wrote ${opening.length} opening balances (v9).');
+        }
+      }
+      v = 9;
+    }
+
     await prefs.setInt(_kSchema, v);
   }
 
@@ -283,6 +358,10 @@ class AppState extends ChangeNotifier {
       _kPurchases,
       jsonEncode(purchases.map((e) => e.toJson()).toList()),
     );
+    await prefs.setString(
+      _kAdjustments,
+      jsonEncode(adjustments.map((e) => e.toJson()).toList()),
+    );
   }
 
   /// Awaits any pending write. Use in tests and before export.
@@ -299,6 +378,7 @@ class AppState extends ChangeNotifier {
     'recipes': recipes.map((e) => e.toJson()).toList(),
     'mixLog': mixLog.map((e) => e.toJson()).toList(),
     'purchases': purchases.map((e) => e.toJson()).toList(),
+    'adjustments': adjustments.map((e) => e.toJson()).toList(),
   });
 
   /// Raw stored strings, for salvaging data when load() has failed.
@@ -319,8 +399,7 @@ class AppState extends ChangeNotifier {
     final schema = (decoded['schema'] as num?)?.toInt() ?? 1;
     if (schema > currentSchema) {
       throw FormatException(
-        'Backup schema v$schema is newer than '
-        'this build (v$currentSchema).',
+        'Backup schema v$schema is newer than this build (v$currentSchema).',
       );
     }
 
@@ -329,9 +408,11 @@ class AppState extends ChangeNotifier {
       recipes.clear();
       mixLog.clear();
       purchases.clear();
+      adjustments.clear();
     }
 
-    var ni = 0, nr = 0, nl = 0, np = 0;
+    var ni = 0, nr = 0, nl = 0, np = 0, na = 0;
+
     final haveIng = ingredients.map((e) => e.id).toSet();
     for (final e in (decoded['ingredients'] as List? ?? const [])) {
       final j = e as Map<String, dynamic>;
@@ -346,6 +427,7 @@ class AppState extends ChangeNotifier {
         ni++;
       }
     }
+
     final haveRec = recipes.map((e) => e.id).toSet();
     for (final e in (decoded['recipes'] as List? ?? const [])) {
       final r = Recipe.fromJson(e as Map<String, dynamic>);
@@ -354,6 +436,7 @@ class AppState extends ChangeNotifier {
         nr++;
       }
     }
+
     final haveLog = mixLog.map((e) => e.id).toSet();
     for (final e in (decoded['mixLog'] as List? ?? const [])) {
       final l = MixLog.fromJson(e as Map<String, dynamic>);
@@ -362,6 +445,7 @@ class AppState extends ChangeNotifier {
         nl++;
       }
     }
+
     final havePur = purchases.map((e) => e.id).toSet();
     for (final e in (decoded['purchases'] as List? ?? const [])) {
       final p = Purchase.fromJson(e as Map<String, dynamic>);
@@ -370,16 +454,60 @@ class AppState extends ChangeNotifier {
         np++;
       }
     }
+
+    final haveAdj = adjustments.map((e) => e.id).toSet();
+    for (final e in (decoded['adjustments'] as List? ?? const [])) {
+      final a = StockAdjustment.fromJson(e as Map<String, dynamic>);
+      if (haveAdj.add(a.id)) {
+        adjustments.add(a);
+        na++;
+      }
+    }
+
+    // A pre-v9 backup carries stock as a number with no ledger behind it.
+    // Give each imported ingredient an opening balance so the replay
+    // reproduces what the backup said.
+    if (schema < 9) {
+      final now = DateTime.now();
+      for (final e in (decoded['ingredients'] as List? ?? const [])) {
+        final j = e as Map<String, dynamic>;
+        final id = j['id'] as String;
+        final stock = (j['stockMl'] as num?)?.toDouble() ?? 0;
+        if (stock.abs() < 1e-9) continue;
+        final openingId = 'opening-import-$id';
+        if (!haveAdj.add(openingId)) continue;
+        final avg = (j['avgCostPerMl'] as num?)?.toDouble() ?? 0;
+        final size = (j['bottleSizeMl'] as num?)?.toDouble() ?? 0;
+        final price = (j['bottleCost'] as num?)?.toDouble() ?? 0;
+        adjustments.add(
+          StockAdjustment(
+            id: openingId,
+            ingredientId: id,
+            ingredientName: j['name'] as String? ?? '',
+            at: now,
+            deltaMl: stock,
+            reason: AdjustReason.opening,
+            costPerMl: avg > 0 ? avg : (size > 0 ? price / size : 0),
+            note: 'Opening balance from an imported pre-ledger backup.',
+          ),
+        );
+        na++;
+      }
+    }
+
     mixLog.sort((a, b) => b.mixedAt.compareTo(a.mixedAt));
     purchases.sort((a, b) => b.at.compareTo(a.at));
+    adjustments.sort((a, b) => b.at.compareTo(a.at));
 
     if (decoded['settings'] != null) {
       settings = Settings.fromJson(decoded['settings'] as Map<String, dynamic>);
     }
 
+    recomputeStock();
     notifyListeners();
     await _save();
-    return 'Imported $ni ingredients, $nr recipes, $nl mixes, $np restocks.';
+    return 'Imported $ni ingredients, $nr recipes, $nl mixes, $np restocks, '
+        '$na adjustments.';
   }
 
   Future<void> factoryReset() async {
@@ -387,6 +515,7 @@ class AppState extends ChangeNotifier {
     recipes.clear();
     mixLog.clear();
     purchases.clear();
+    adjustments.clear();
     settings = Settings();
     _seedIngredients();
     _seedRecipes();
@@ -422,11 +551,10 @@ class AppState extends ChangeNotifier {
       density: settings.densityForCarrier(kind, carrierVg),
       bottleSizeMl: size,
       bottleCost: cost,
-      stockMl: size,
       nicStrength: nic,
     );
 
-    ingredients.addAll([
+    final seeded = [
       mk('PG', IngredientKind.pg, size: 500, cost: 12),
       mk('VG', IngredientKind.vg, size: 500, cost: 14),
       mk(
@@ -436,7 +564,27 @@ class AppState extends ChangeNotifier {
         cost: 25,
         nic: 100,
       ),
-    ]);
+    ];
+    ingredients.addAll(seeded);
+
+    // Stock enters through the ledger, never by assignment.
+    final now = DateTime.now();
+    for (final e in seeded) {
+      if (e.bottleSizeMl <= 0) continue;
+      adjustments.add(
+        StockAdjustment(
+          id: newId(),
+          ingredientId: e.id,
+          ingredientName: e.displayName,
+          at: now,
+          deltaMl: e.bottleSizeMl,
+          reason: AdjustReason.opening,
+          costPerMl: e.bottleCost / e.bottleSizeMl,
+          note: 'Starting stock.',
+        ),
+      );
+    }
+    recomputeStock();
   }
 
   /// r/DIY_eJuice classics, circa 2014-2016. Percentages are the commonly
@@ -472,14 +620,14 @@ class AppState extends ChangeNotifier {
       r(
         'Mustard Milk',
         "u/Vurve's 2014 strawberry milk — the recipe that made TFA "
-            'Strawberry Ripe famous. Shake-and-vape friendly; some '
-            'versions run 6/6.',
+            'Strawberry Ripe famous. Shake-and-vape friendly; some versions '
+            'run 6/6.',
         [rf(sbRipe, 8), rf(vbic, 6)],
       ),
       r(
         'Nana Cream',
-        "Botboy141's homage to the Bombies classic. Commonly posted at "
-            '6/4; add 2% Vanilla Bean Ice Cream for a richer take.',
+        "Botboy141's homage to the Bombies classic. Commonly posted at 6/4; "
+            'add 2% Vanilla Bean Ice Cream for a richer take.',
         [rf(bananaCream, 6), rf(sbRipe, 4)],
       ),
       r(
@@ -494,8 +642,8 @@ class AppState extends ChangeNotifier {
       ]),
       r(
         'Castle Long (clone)',
-        'Five Pawns-style coconut-almond-bourbon custard. '
-            'Long steep, 3+ weeks.',
+        'Five Pawns-style coconut-almond-bourbon custard. Long steep, '
+            '3+ weeks.',
         [
           rf(custard, 3),
           rf(bourbon, 2),
@@ -526,6 +674,119 @@ class AppState extends ChangeNotifier {
     return ing;
   }
 
+  // ------------------------------------------------------------------ ledger
+
+  /// Recomputes derived stock and cost basis for every ingredient in one
+  /// pass over the ledger. Called after any mutation that touches it.
+  ///
+  /// O(events + ingredients), so cheap enough to run eagerly rather than
+  /// caching per ingredient and risking staleness.
+  void recomputeStock() {
+    final vol = <String, double>{};
+    final costVol = <String, double>{};
+    final costSum = <String, double>{};
+
+    for (final p in purchases) {
+      vol[p.ingredientId] = (vol[p.ingredientId] ?? 0) + p.volumeMl;
+      if (p.volumeMl > 0) {
+        costVol[p.ingredientId] = (costVol[p.ingredientId] ?? 0) + p.volumeMl;
+        costSum[p.ingredientId] = (costSum[p.ingredientId] ?? 0) + p.totalCost;
+      }
+    }
+
+    for (final l in mixLog) {
+      for (final line in l.lines) {
+        final id = line.ingredientId;
+        if (id == null) continue;
+        vol[id] = (vol[id] ?? 0) - line.requestedMl;
+      }
+    }
+
+    for (final a in adjustments) {
+      vol[a.ingredientId] = (vol[a.ingredientId] ?? 0) + a.deltaMl;
+      if (a.deltaMl > 0 && a.costPerMl > 0) {
+        costVol[a.ingredientId] = (costVol[a.ingredientId] ?? 0) + a.deltaMl;
+        costSum[a.ingredientId] =
+            (costSum[a.ingredientId] ?? 0) + a.deltaMl * a.costPerMl;
+      }
+    }
+
+    for (final e in ingredients) {
+      e.stockMl = vol[e.id] ?? 0;
+      final cv = costVol[e.id] ?? 0;
+      e.avgCostPerMl = cv > 0 ? (costSum[e.id] ?? 0) / cv : 0;
+    }
+  }
+
+  /// Full ledger for one ingredient, oldest first, with running balance.
+  List<StockLedgerEntry> ledgerFor(String ingredientId) {
+    final raw = <(DateTime, double, String, dynamic, String, String?, bool)>[];
+
+    for (final p in purchases) {
+      if (p.ingredientId != ingredientId) continue;
+      raw.add((
+        p.at,
+        p.volumeMl,
+        'Restocked',
+        adjustReasonIcon(AdjustReason.other),
+        '${money(p.totalCost, settings)}'
+            '${p.shippingCost > 0 ? ' incl. ${money(p.shippingCost, settings)} shipping' : ''}',
+        p.id,
+        true,
+      ));
+    }
+
+    for (final l in mixLog) {
+      for (final line in l.lines) {
+        if (line.ingredientId != ingredientId) continue;
+        raw.add((
+          l.mixedAt,
+          -line.requestedMl,
+          'Mixed "${l.label}"',
+          adjustReasonIcon(AdjustReason.other),
+          '${line.grams.toStringAsFixed(2)} g',
+          l.id,
+          true,
+        ));
+      }
+    }
+
+    for (final a in adjustments) {
+      if (a.ingredientId != ingredientId) continue;
+      raw.add((
+        a.at,
+        a.deltaMl,
+        adjustReasonLabel(a.reason),
+        adjustReasonIcon(a.reason),
+        a.note,
+        a.id,
+        a.reason != AdjustReason.opening,
+      ));
+    }
+
+    raw.sort((x, y) => x.$1.compareTo(y.$1));
+
+    var balance = 0.0;
+    return [
+      for (final r in raw)
+        StockLedgerEntry(
+          at: r.$1,
+          deltaMl: r.$2,
+          label: r.$3,
+          icon: r.$4 as dynamic,
+          detail: r.$5,
+          sourceId: r.$6,
+          canUndo: r.$7,
+          balanceAfter: balance += r.$2,
+        ),
+    ];
+  }
+
+  List<Ingredient> get negativeStock => [
+    for (final e in ingredients)
+      if (e.stockIsNegative) e,
+  ];
+
   // ----------------------------------------------------------------- queries
 
   Ingredient? byId(String? id) {
@@ -536,11 +797,27 @@ class AppState extends ChangeNotifier {
     return null;
   }
 
-  /// Everything addable by percentage: flavors, additives and thinners.
-  List<Ingredient> get concentrates => [
-    for (final e in ingredients)
-      if (isConcentrate(e.kind)) e,
-  ];
+  Ingredient? flavorByName(String query) {
+    final q = query.trim().toLowerCase();
+    if (q.isEmpty) return null;
+    for (final e in ingredients) {
+      if (!isConcentrate(e.kind)) continue;
+      if (e.displayName.toLowerCase() == q || e.name.toLowerCase() == q) {
+        return e;
+      }
+    }
+    return null;
+  }
+
+  /// Existing ingredient with the same brand + name, ignoring [exceptId].
+  Ingredient? findDuplicate(String brand, String name, {String? exceptId}) {
+    final key = '${brand.trim().toLowerCase()}|${name.trim().toLowerCase()}';
+    for (final e in ingredients) {
+      if (e.id == exceptId) continue;
+      if (e.dedupKey == key) return e;
+    }
+    return null;
+  }
 
   Recipe? recipeById(String? id) {
     if (id == null) return null;
@@ -561,6 +838,15 @@ class AppState extends ChangeNotifier {
     }
     return null;
   }
+
+  List<Recipe> recipesUsing(String ingredientId) => [
+    for (final r in recipes)
+      if (r.flavors.any((f) => f.ingredientId == ingredientId)) r,
+  ];
+
+  int mixesUsing(String ingredientId) => mixLog
+      .where((l) => l.lines.any((x) => x.ingredientId == ingredientId))
+      .length;
 
   List<MixLog> mixesForRecipe(String recipeId) => [
     for (final l in mixLog)
@@ -593,17 +879,17 @@ class AppState extends ChangeNotifier {
   int get ratedMixCount => mixLog.where((l) => l.rating != null).length;
 
   /// Rebuilds a recipe from what was actually mixed, so a log entry can be
-  /// pushed back through the calculator. Flavor percentages are derived from
-  /// the volumes requested at mix time, not from the current recipe — a
-  /// remix reproduces that bottle even if the recipe has since changed.
+  /// pushed back through the calculator. Flavor percentages are derived
+  /// from the volumes requested at mix time, not from the current recipe —
+  /// a remix reproduces that bottle even if the recipe has since changed.
   ///
-  /// The returned recipe carries a synthetic id, so the calculator treats it
-  /// as unsaved rather than offering to overwrite anything.
+  /// The returned recipe carries a synthetic id, so the calculator treats
+  /// it as unsaved rather than offering to overwrite anything.
   Recipe recipeFromLog(MixLog l) {
     final flavors = <RecipeFlavor>[];
     for (final line in l.lines) {
       final ing = byId(line.ingredientId);
-      if (ing == null || ing.kind != IngredientKind.flavor) continue;
+      if (ing == null || !isConcentrate(ing.kind)) continue;
       if (line.requestedMl <= 0 || l.batchMl <= 0) continue;
       flavors.add(
         RecipeFlavor(
@@ -624,37 +910,6 @@ class AppState extends ChangeNotifier {
     );
   }
 
-  Ingredient? flavorByName(String query) {
-    final q = query.trim().toLowerCase();
-    if (q.isEmpty) return null;
-    for (final e in ingredients) {
-      if (e.kind != IngredientKind.flavor) continue;
-      if (e.displayName.toLowerCase() == q || e.name.toLowerCase() == q) {
-        return e;
-      }
-    }
-    return null;
-  }
-
-  /// Existing ingredient with the same brand + name, ignoring [exceptId].
-  Ingredient? findDuplicate(String brand, String name, {String? exceptId}) {
-    final key = '${brand.trim().toLowerCase()}|${name.trim().toLowerCase()}';
-    for (final e in ingredients) {
-      if (e.id == exceptId) continue;
-      if (e.dedupKey == key) return e;
-    }
-    return null;
-  }
-
-  List<Recipe> recipesUsing(String ingredientId) => [
-    for (final r in recipes)
-      if (r.flavors.any((f) => f.ingredientId == ingredientId)) r,
-  ];
-
-  int mixesUsing(String ingredientId) => mixLog
-      .where((l) => l.lines.any((x) => x.ingredientId == ingredientId))
-      .length;
-
   List<Ingredient> ofKind(IngredientKind k) =>
       ingredients.where((e) => e.kind == k).toList();
 
@@ -662,6 +917,12 @@ class AppState extends ChangeNotifier {
     final list = ofKind(k);
     return list.isEmpty ? null : list.first;
   }
+
+  /// Everything addable by percentage: flavors, additives and thinners.
+  List<Ingredient> get concentrates => [
+    for (final e in ingredients)
+      if (isConcentrate(e.kind)) e,
+  ];
 
   List<String> get brands {
     final set = <String>{};
@@ -681,13 +942,13 @@ class AppState extends ChangeNotifier {
       ingredients.fold(0.0, (a, e) => a + e.stockMl * e.costPerMl);
 
   double get lifetimeMixCost => mixLog.fold(0.0, (a, l) => a + l.totalCost);
-  double get lifetimeSpend => purchases.fold(0.0, (a, p) => a + p.totalCost);
 
   double get lifetimeHardwareCost =>
       mixLog.fold(0.0, (a, l) => a + l.hardwareCost);
 
+  double get lifetimeSpend => purchases.fold(0.0, (a, p) => a + p.totalCost);
+
   /// Largest batch of [r] mixable from current stock, or null if unlimited.
-  /// Computed at the recipe's own batch size and scaled.
   double? capacityFor(Recipe r) {
     final ref = r.batchMl > 0 ? r.batchMl : 30.0;
     final result = calculateMix(
@@ -724,12 +985,14 @@ class AppState extends ChangeNotifier {
     } else {
       ingredients.add(ing);
     }
+    recomputeStock();
     notifyListeners();
     _save();
   }
 
   /// Removes an ingredient and returns it plus its index, so the caller can
-  /// offer an undo. Callers must confirm first — see [recipesUsing].
+  /// offer an undo. Its ledger events are left alone, so restoring brings
+  /// the stock back exactly.
   (Ingredient, int)? removeIngredient(String id) {
     final i = ingredients.indexWhere((e) => e.id == id);
     if (i < 0) return null;
@@ -740,40 +1003,21 @@ class AppState extends ChangeNotifier {
   }
 
   void restoreIngredient(Ingredient ing, int index) {
-    final at = index.clamp(0, ingredients.length);
-    ingredients.insert(at, ing);
+    ingredients.insert(index.clamp(0, ingredients.length), ing);
+    recomputeStock();
     notifyListeners();
     _save();
   }
 
-  /// Records a restock. The cost basis becomes the volume-weighted average of
-  /// existing stock and this purchase, rather than silently adopting the
-  /// current bottle price.
+  /// Records a restock. Stock and cost basis are derived, so this only
+  /// appends to the ledger.
   Purchase recordPurchase({
     required String ingredientId,
     required double volumeMl,
     required double cost,
     double shippingCost = 0,
-    bool useWeightedAverage = true,
   }) {
     final ing = byId(ingredientId)!;
-    final prevStock = ing.stockMl;
-    final prevCostPerMl = ing.costPerMl;
-    final prevAvg = ing.avgCostPerMl;
-
-    // Shipping is part of what the liquid actually cost you.
-    final landed = cost + shippingCost;
-    final newCostPerMl = volumeMl > 0 ? landed / volumeMl : 0.0;
-    ing.stockMl = prevStock + volumeMl;
-    if (useWeightedAverage) {
-      final denom = prevStock + volumeMl;
-      ing.avgCostPerMl = denom > 0
-          ? (prevStock * prevCostPerMl + volumeMl * newCostPerMl) / denom
-          : newCostPerMl;
-    } else {
-      ing.avgCostPerMl = newCostPerMl;
-    }
-
     final p = Purchase(
       id: newId(),
       ingredientId: ingredientId,
@@ -782,27 +1026,75 @@ class AppState extends ChangeNotifier {
       volumeMl: volumeMl,
       cost: cost,
       shippingCost: shippingCost,
-      prevStockMl: prevStock,
-      prevCostPerMl: prevCostPerMl,
-      prevAvgCostPerMl: prevAvg,
+      prevStockMl: ing.stockMl,
+      prevCostPerMl: ing.costPerMl,
+      prevAvgCostPerMl: ing.avgCostPerMl,
     );
     purchases.insert(0, p);
+    recomputeStock();
     notifyListeners();
     _save();
     return p;
   }
 
-  /// Restores the exact pre-purchase stock and cost basis.
+  /// Removes a purchase from the ledger. Stock and cost fall out correctly
+  /// from the replay, so there is nothing to restore by hand.
   bool undoPurchase(String purchaseId) {
     final i = purchases.indexWhere((e) => e.id == purchaseId);
     if (i < 0) return false;
-    final p = purchases[i];
-    final ing = byId(p.ingredientId);
-    if (ing != null) {
-      ing.stockMl = p.prevStockMl;
-      ing.avgCostPerMl = p.prevAvgCostPerMl;
-    }
     purchases.removeAt(i);
+    recomputeStock();
+    notifyListeners();
+    _save();
+    return true;
+  }
+
+  StockAdjustment addAdjustment({
+    required String ingredientId,
+    required double deltaMl,
+    AdjustReason reason = AdjustReason.correction,
+    double costPerMl = 0,
+    String note = '',
+  }) {
+    final ing = byId(ingredientId)!;
+    final a = StockAdjustment(
+      id: newId(),
+      ingredientId: ingredientId,
+      ingredientName: ing.displayName,
+      at: DateTime.now(),
+      deltaMl: deltaMl,
+      reason: reason,
+      costPerMl: costPerMl,
+      note: note,
+    );
+    adjustments.insert(0, a);
+    recomputeStock();
+    notifyListeners();
+    _save();
+    return a;
+  }
+
+  /// Convenience: writes whatever adjustment makes derived stock equal
+  /// [targetMl]. This is how "I counted the bottle" gets recorded.
+  StockAdjustment setStockTo(
+    String ingredientId,
+    double targetMl, {
+    String note = '',
+  }) {
+    final current = byId(ingredientId)!.stockMl;
+    return addAdjustment(
+      ingredientId: ingredientId,
+      deltaMl: targetMl - current,
+      reason: AdjustReason.correction,
+      note: note.isEmpty ? 'Set to ${targetMl.toStringAsFixed(1)} mL' : note,
+    );
+  }
+
+  bool removeAdjustment(String adjustmentId) {
+    final i = adjustments.indexWhere((e) => e.id == adjustmentId);
+    if (i < 0) return false;
+    adjustments.removeAt(i);
+    recomputeStock();
     notifyListeners();
     _save();
     return true;
@@ -815,7 +1107,6 @@ class AppState extends ChangeNotifier {
   }
 
   /// Replaces a recipe in place, keeping its position in the list.
-  /// Falls back to appending if the id is unknown.
   void updateRecipe(Recipe r) {
     final i = recipes.indexWhere((e) => e.id == r.id);
     if (i >= 0) {
@@ -839,6 +1130,8 @@ class AppState extends ChangeNotifier {
       batchMl: src.batchMl,
       targetNic: src.targetNic,
       targetVgPercent: src.targetVgPercent,
+      percentMode: src.percentMode,
+      baseMode: src.baseMode,
       flavors: [
         for (final f in src.flavors)
           RecipeFlavor(
@@ -854,7 +1147,6 @@ class AppState extends ChangeNotifier {
     return copy;
   }
 
-  /// Removes a recipe and returns it with its index so the caller can undo.
   (Recipe, int)? removeRecipe(String id) {
     final i = recipes.indexWhere((e) => e.id == id);
     if (i < 0) return null;
@@ -876,10 +1168,10 @@ class AppState extends ChangeNotifier {
     _save();
   }
 
-  /// Records a mix, deducts stock, and returns the log entry.
-  /// Achieved nicotine and VG% are recomputed from the real amounts.
-  /// Records a mix, deducts stock, and returns the log entry.
-  /// Achieved nicotine and VG% are recomputed from the real amounts.
+  /// Records a mix. Stock is derived, so this appends a log entry and
+  /// replays — no in-place deduction, and no flooring at zero. A mix larger
+  /// than stock leaves a negative balance, which is surfaced rather than
+  /// silently absorbed.
   MixLog logMix(
     MixResult r, {
     String label = '',
@@ -888,28 +1180,19 @@ class AppState extends ChangeNotifier {
     double targetVgPercent = 0,
     bool weighed = false,
   }) {
-    final lines = <MixLogLine>[];
-    for (final l in r.lines) {
-      final ing = byId(l.ingredientId);
-      var deducted = 0.0;
-      if (ing != null && l.ml > 0) {
-        deducted = l.ml <= ing.stockMl ? l.ml : ing.stockMl;
-        if (deducted < 0) deducted = 0;
-        ing.stockMl = ing.stockMl - deducted;
-        if (ing.stockMl < 0) ing.stockMl = 0;
-      }
-      lines.add(
+    final lines = [
+      for (final l in r.lines)
         MixLogLine(
           name: l.name,
           ingredientId: l.ingredientId,
           requestedMl: l.ml,
-          deductedMl: deducted,
+          // Equal under event sourcing; kept so pre-v9 logs still read.
+          deductedMl: l.ml,
           grams: l.grams,
           cost: l.cost,
         ),
-      );
-    }
-    final hardware = hardwareCostFor(r.totalMl, settings);
+    ];
+
     final log = MixLog(
       id: newId(),
       mixedAt: DateTime.now(),
@@ -921,19 +1204,34 @@ class AppState extends ChangeNotifier {
       actualNic: r.actualNicMgPerMl,
       actualVgPercent: r.actualVgPercent,
       totalGrams: r.totalGrams,
-      hardwareCost: hardware,
       totalCost: r.totalCost,
+      hardwareCost: hardwareCostFor(r.totalMl, settings),
       weighed: weighed,
       lines: lines,
     );
     mixLog.insert(0, log);
+    recomputeStock();
     notifyListeners();
     _save();
     return log;
   }
 
+  bool undoMix(String logId) {
+    final i = mixLog.indexWhere((e) => e.id == logId);
+    if (i < 0) return false;
+    mixLog.removeAt(i);
+    recomputeStock();
+    notifyListeners();
+    _save();
+    return true;
+  }
+
+  /// Under a ledger the entry *is* the deduction, so this is the same as
+  /// [undoMix]. Kept as a distinct name for call sites that read better.
+  void deleteLogEntry(String logId) => undoMix(logId);
+
   /// Sets or clears the rating and tasting notes on a logged mix.
-  /// Stamps [ratedAt] so the steep time at tasting is recoverable.
+  /// Stamps ratedAt so the steep time at tasting is recoverable.
   bool rateMix(
     String logId, {
     int? rating,
@@ -951,25 +1249,5 @@ class AppState extends ChangeNotifier {
     notifyListeners();
     _save();
     return true;
-  }
-
-  bool undoMix(String logId) {
-    final i = mixLog.indexWhere((e) => e.id == logId);
-    if (i < 0) return false;
-    for (final line in mixLog[i].lines) {
-      final ing = byId(line.ingredientId);
-      if (ing == null) continue;
-      ing.stockMl = ing.stockMl + line.deductedMl;
-    }
-    mixLog.removeAt(i);
-    notifyListeners();
-    _save();
-    return true;
-  }
-
-  void deleteLogEntry(String logId) {
-    mixLog.removeWhere((e) => e.id == logId);
-    notifyListeners();
-    _save();
   }
 }

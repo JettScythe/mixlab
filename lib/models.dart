@@ -1,15 +1,7 @@
+import 'package:flutter/material.dart' show IconData, Icons;
 import 'package:intl/intl.dart';
 
 enum IngredientKind { pg, vg, nicotine, flavor, additive, thinner }
-
-/// Reference densities at room temperature, g/mL.
-const kPgDensity = 1.036;
-const kVgDensity = 1.261;
-
-/// Most flavor concentrates are PG-based, so they default to PG. Thinners
-/// are not — distilled water is ~1.0, PGA closer to 0.94.
-const kFlavorDensity = kPgDensity;
-const kThinnerDensity = 1.0;
 
 /// Enum indices are persisted, so values may only be appended.
 /// Unknown indices from a newer build degrade to [IngredientKind.flavor].
@@ -30,7 +22,7 @@ String kindLabel(IngredientKind k) => switch (k) {
 String kindHint(IngredientKind k) => switch (k) {
   IngredientKind.pg => 'Propylene glycol base.',
   IngredientKind.vg => 'Vegetable glycerin base.',
-  IngredientKind.nicotine => 'Nicotine base, measured in mg/mL.',
+  IngredientKind.nicotine => 'Nicotine base, measured in mg/mL or mg/g.',
   IngredientKind.flavor => 'Counts toward the recipe flavor percentage.',
   IngredientKind.additive =>
     'Sweeteners, coolants, enhancers. Added by percentage but excluded '
@@ -49,23 +41,22 @@ bool isConcentrate(IngredientKind k) =>
 /// How recipe percentages are interpreted.
 enum PercentMode { byVolume, byWeight }
 
+String percentModeLabel(PercentMode m) => switch (m) {
+  PercentMode.byVolume => 'By volume',
+  PercentMode.byWeight => 'By weight',
+};
+
+String percentModeHint(PercentMode m) => switch (m) {
+  PercentMode.byVolume =>
+    'A 10% flavor in a 30 mL batch means 3 mL. This is how ELR and most '
+        'shared recipes are written.',
+  PercentMode.byWeight =>
+    'A 10% flavor means 10% of the finished weight. Differs from volume '
+        'by up to ~20% on VG-heavy mixes.',
+};
+
 /// How the PG/VG base is allocated.
 enum BaseMode { ratio, maxVg }
-
-/// How a nicotine base's strength is labelled.
-enum NicUnit { perMl, perGram }
-
-String nicUnitLabel(NicUnit u) => switch (u) {
-  NicUnit.perMl => 'mg/mL',
-  NicUnit.perGram => 'mg/g',
-};
-
-String nicUnitHint(NicUnit u) => switch (u) {
-  NicUnit.perMl => 'Strength per millilitre. The usual labelling.',
-  NicUnit.perGram =>
-    'Strength per gram. Converted using this base\'s density, so get the '
-        'density right or the whole mix is off.',
-};
 
 String baseModeLabel(BaseMode m) => switch (m) {
   BaseMode.ratio => 'Target ratio',
@@ -79,18 +70,19 @@ String baseModeHint(BaseMode m) => switch (m) {
         'concentrates leave, so the final ratio is whatever it works out to.',
 };
 
-String percentModeLabel(PercentMode m) => switch (m) {
-  PercentMode.byVolume => 'By volume',
-  PercentMode.byWeight => 'By weight',
+/// How a nicotine base's strength is labelled.
+enum NicUnit { perMl, perGram }
+
+String nicUnitLabel(NicUnit u) => switch (u) {
+  NicUnit.perMl => 'mg/mL',
+  NicUnit.perGram => 'mg/g',
 };
 
-String percentModeHint(PercentMode m) => switch (m) {
-  PercentMode.byVolume =>
-    'A 10% flavor in a 30 mL batch means 3 mL. This is how ELR and most '
-        'shared recipes are written.',
-  PercentMode.byWeight =>
-    'A 10% flavor means 10% of the finished weight. Differs from volume '
-        'by up to ~20% on VG-heavy mixes.',
+String nicUnitHint(NicUnit u) => switch (u) {
+  NicUnit.perMl => 'Strength per millilitre. The usual labelling.',
+  NicUnit.perGram =>
+    "Strength per gram. Converted using this base's density, so get the "
+        'density right or the whole mix is off.',
 };
 
 /// Brand shorthands seen in DIY recipes, mapped to full vendor names.
@@ -146,6 +138,15 @@ double? parseNum(String s) {
   return v;
 }
 
+/// Same as [parseNum] but allows negatives, for signed stock adjustments.
+double? parseSigned(String s) {
+  final t = s.trim().replaceAll(',', '.');
+  if (t.isEmpty) return null;
+  final v = double.tryParse(t);
+  if (v == null || v.isNaN || v.isInfinite) return null;
+  return v;
+}
+
 NumberFormat? _moneyFormat;
 String? _moneyCurrency;
 
@@ -183,9 +184,9 @@ class Ingredient {
     this.brand = '',
     this.bottleSizeMl = 0,
     this.bottleCost = 0,
-    this.avgCostPerMl = 0, // weighted average from restocks; 0 = unset
+    this.avgCostPerMl = 0,
     this.stockMl = 0,
-    this.nicStrength = 0, // mg/mL, nicotine bases only
+    this.nicStrength = 0,
     this.nicUnit = NicUnit.perMl,
     this.nicIsSalt = false,
     this.carrierVg = 0, // 0..1 fraction of carrier that is VG
@@ -199,11 +200,22 @@ class Ingredient {
   double density;
   double bottleSizeMl;
   double bottleCost;
+
+  /// Weighted average from the stock ledger. Derived — see [stockMl].
   double avgCostPerMl;
+
+  /// Derived from the stock ledger: purchases, mixes and adjustments.
+  /// Never assign this directly; [AppState.recomputeStock] owns it.
+  /// Persisted only as a snapshot so the value is inspectable in a backup.
   double stockMl;
+
   double nicStrength;
   NicUnit nicUnit;
+
+  /// Informational. Salt nicotine is not mixed differently, but recording
+  /// it keeps the log honest about what is in the bottle.
   bool nicIsSalt;
+
   double carrierVg;
   String notes;
 
@@ -215,10 +227,16 @@ class Ingredient {
   String get dedupKey =>
       '${brand.trim().toLowerCase()}|${name.trim().toLowerCase()}';
 
-  /// Weighted average basis when restocks have set one, else bottle price.
+  /// Weighted average basis from the ledger, else the bottle price.
   double get costPerMl => avgCostPerMl > 0
       ? avgCostPerMl
       : (bottleSizeMl > 0 ? bottleCost / bottleSizeMl : 0);
+
+  double get stockGrams => stockMl * density;
+
+  /// Records disagree with reality. Almost always an unlogged purchase or
+  /// a mix logged twice.
+  bool get stockIsNegative => stockMl < -1e-9;
 
   /// Strength normalised to mg per mL, which is what the mixing math wants.
   /// A mg/g base converts through its density, so a 100 mg/g VG base is
@@ -227,7 +245,6 @@ class Ingredient {
     NicUnit.perMl => nicStrength,
     NicUnit.perGram => nicStrength * density,
   };
-  double get stockGrams => stockMl * density;
 
   /// True when [density] disagrees with what the carrier implies. Catches
   /// VG-based nicotine and concentrates left at the PG default.
@@ -273,23 +290,25 @@ class Ingredient {
 
 class Settings {
   Settings({
-    this.pgDensity = kPgDensity,
-    this.vgDensity = kVgDensity,
-    this.flavorDensity = kPgDensity,
-    this.thinnerDensity = kThinnerDensity,
+    this.pgDensity = 1.036,
+    this.vgDensity = 1.261,
+    // Concentrates are mostly carrier, so a PG-based flavor sits at PG's
+    // density rather than at 1.0.
+    this.flavorDensity = 1.036,
+    this.thinnerDensity = 1.0,
     this.currency = 'USD',
     this.defaultVgPercent = 70,
     this.defaultBatchMl = 30,
     this.refBottleMl = 30,
     this.scaleResolution = 0.01,
-    this.tareEachStep = true,
+    this.tareEachStep = false,
     this.lowStockMl = 5,
+    this.defaultPercentMode = PercentMode.byVolume,
+    this.themeMode = 0,
     this.includeHardware = false,
     this.emptyBottleCost = 0,
     this.emptyBottleMl = 30,
     this.consumablesCost = 0,
-    this.themeMode = 0,
-    this.defaultPercentMode = PercentMode.byVolume,
   });
 
   double pgDensity;
@@ -303,6 +322,10 @@ class Settings {
   double scaleResolution;
   bool tareEachStep;
   double lowStockMl;
+  PercentMode defaultPercentMode;
+
+  /// 0 system, 1 light, 2 dark.
+  int themeMode;
 
   /// Bottles, caps and gloves are a real per-batch cost. Off by default so
   /// existing figures do not change under you.
@@ -312,8 +335,6 @@ class Settings {
 
   /// Caps, labels, gloves — anything spent per batch regardless of size.
   double consumablesCost;
-  int themeMode; // 0 system, 1 light, 2 dark
-  PercentMode defaultPercentMode;
 
   /// Density implied by kind alone. Prefer [densityForCarrier].
   double densityFor(IngredientKind k) => densityForCarrier(k, 0);
@@ -344,19 +365,19 @@ class Settings {
     'scaleResolution': scaleResolution,
     'tareEachStep': tareEachStep,
     'lowStockMl': lowStockMl,
+    'defaultPercentMode': defaultPercentMode.index,
+    'themeMode': themeMode,
     'includeHardware': includeHardware,
     'emptyBottleCost': emptyBottleCost,
     'emptyBottleMl': emptyBottleMl,
     'consumablesCost': consumablesCost,
-    'defaultPercentMode': defaultPercentMode.index,
   };
 
   factory Settings.fromJson(Map<String, dynamic> j) => Settings(
-    pgDensity: (j['pgDensity'] as num?)?.toDouble() ?? kPgDensity,
-    vgDensity: (j['vgDensity'] as num?)?.toDouble() ?? kVgDensity,
-    flavorDensity: (j['flavorDensity'] as num?)?.toDouble() ?? kPgDensity,
-    thinnerDensity:
-        (j['thinnerDensity'] as num?)?.toDouble() ?? kThinnerDensity,
+    pgDensity: (j['pgDensity'] as num?)?.toDouble() ?? 1.036,
+    vgDensity: (j['vgDensity'] as num?)?.toDouble() ?? 1.261,
+    flavorDensity: (j['flavorDensity'] as num?)?.toDouble() ?? 1.036,
+    thinnerDensity: (j['thinnerDensity'] as num?)?.toDouble() ?? 1.0,
     currency: j['currency'] as String? ?? 'USD',
     defaultVgPercent: (j['defaultVgPercent'] as num?)?.toDouble() ?? 70,
     defaultBatchMl: (j['defaultBatchMl'] as num?)?.toDouble() ?? 30,
@@ -364,12 +385,13 @@ class Settings {
     scaleResolution: (j['scaleResolution'] as num?)?.toDouble() ?? 0.01,
     tareEachStep: j['tareEachStep'] as bool? ?? false,
     lowStockMl: (j['lowStockMl'] as num?)?.toDouble() ?? 5,
+    defaultPercentMode:
+        PercentMode.values[(j['defaultPercentMode'] as num?)?.toInt() ?? 0],
+    themeMode: (j['themeMode'] as num?)?.toInt() ?? 0,
     includeHardware: j['includeHardware'] as bool? ?? false,
     emptyBottleCost: (j['emptyBottleCost'] as num?)?.toDouble() ?? 0,
     emptyBottleMl: (j['emptyBottleMl'] as num?)?.toDouble() ?? 30,
     consumablesCost: (j['consumablesCost'] as num?)?.toDouble() ?? 0,
-    defaultPercentMode:
-        PercentMode.values[(j['defaultPercentMode'] as num?)?.toInt() ?? 0],
   );
 }
 
@@ -422,8 +444,6 @@ class Recipe {
   PercentMode percentMode;
 
   /// Whether [targetVgPercent] is honoured or ignored in favour of max VG.
-  /// Recipes written before this existed use the ratio, matching how they
-  /// were originally mixed.
   BaseMode baseMode;
 
   final List<RecipeFlavor> flavors;
@@ -460,7 +480,8 @@ class Recipe {
   );
 }
 
-/// A restock. Stores the pre-purchase state so undo is exact.
+/// A restock. Append-only: stock and cost basis are derived by replaying
+/// the ledger, so removing this entry removes its effect entirely.
 class Purchase {
   Purchase({
     required this.id,
@@ -469,10 +490,10 @@ class Purchase {
     required this.at,
     required this.volumeMl,
     required this.cost,
-    required this.prevStockMl,
-    required this.prevCostPerMl,
-    required this.prevAvgCostPerMl,
     this.shippingCost = 0,
+    this.prevStockMl = 0,
+    this.prevCostPerMl = 0,
+    this.prevAvgCostPerMl = 0,
   });
 
   final String id;
@@ -481,15 +502,17 @@ class Purchase {
   final DateTime at;
   final double volumeMl;
   final double cost;
-  final double prevStockMl;
-  final double prevCostPerMl;
-  final double prevAvgCostPerMl;
 
   /// Share of an order's shipping attributed to this item.
   final double shippingCost;
 
-  double get totalCost => cost + shippingCost;
+  /// Retained from the pre-ledger model so old backups round-trip.
+  /// No longer consulted — undo works by replay.
+  final double prevStockMl;
+  final double prevCostPerMl;
+  final double prevAvgCostPerMl;
 
+  double get totalCost => cost + shippingCost;
   double get costPerMl => volumeMl > 0 ? totalCost / volumeMl : 0;
 
   Map<String, dynamic> toJson() => {
@@ -499,10 +522,10 @@ class Purchase {
     'at': at.toIso8601String(),
     'volumeMl': volumeMl,
     'cost': cost,
+    'shippingCost': shippingCost,
     'prevStockMl': prevStockMl,
     'prevCostPerMl': prevCostPerMl,
     'prevAvgCostPerMl': prevAvgCostPerMl,
-    'shippingCost': shippingCost,
   };
 
   factory Purchase.fromJson(Map<String, dynamic> j) => Purchase(
@@ -514,11 +537,130 @@ class Purchase {
         DateTime.fromMillisecondsSinceEpoch(0),
     volumeMl: (j['volumeMl'] as num?)?.toDouble() ?? 0,
     cost: (j['cost'] as num?)?.toDouble() ?? 0,
+    shippingCost: (j['shippingCost'] as num?)?.toDouble() ?? 0,
     prevStockMl: (j['prevStockMl'] as num?)?.toDouble() ?? 0,
     prevCostPerMl: (j['prevCostPerMl'] as num?)?.toDouble() ?? 0,
     prevAvgCostPerMl: (j['prevAvgCostPerMl'] as num?)?.toDouble() ?? 0,
-    shippingCost: (j['shippingCost'] as num?)?.toDouble() ?? 0,
   );
+}
+
+/// Why stock changed outside a purchase or a mix.
+enum AdjustReason {
+  opening,
+  correction,
+  spill,
+  evaporation,
+  gift,
+  disposal,
+  other,
+}
+
+String adjustReasonLabel(AdjustReason r) => switch (r) {
+  AdjustReason.opening => 'Opening balance',
+  AdjustReason.correction => 'Correction',
+  AdjustReason.spill => 'Spill or waste',
+  AdjustReason.evaporation => 'Evaporation',
+  AdjustReason.gift => 'Gift or trade',
+  AdjustReason.disposal => 'Disposed',
+  AdjustReason.other => 'Other',
+};
+
+IconData adjustReasonIcon(AdjustReason r) => switch (r) {
+  AdjustReason.opening => Icons.flag_outlined,
+  AdjustReason.correction => Icons.tune,
+  AdjustReason.spill => Icons.water_damage_outlined,
+  AdjustReason.evaporation => Icons.air,
+  AdjustReason.gift => Icons.card_giftcard,
+  AdjustReason.disposal => Icons.delete_outline,
+  AdjustReason.other => Icons.more_horiz,
+};
+
+/// Reasons that represent stock leaving, used to sign a "change by" amount.
+bool adjustReasonRemoves(AdjustReason r) =>
+    r == AdjustReason.spill ||
+    r == AdjustReason.evaporation ||
+    r == AdjustReason.disposal ||
+    r == AdjustReason.gift;
+
+/// A manual change to stock that is neither a purchase nor a mix.
+///
+/// Signed: positive adds, negative removes. Opening balances are how
+/// pre-existing stock enters the ledger.
+class StockAdjustment {
+  StockAdjustment({
+    required this.id,
+    required this.ingredientId,
+    required this.ingredientName,
+    required this.at,
+    required this.deltaMl,
+    this.reason = AdjustReason.correction,
+    this.costPerMl = 0,
+    this.note = '',
+  });
+
+  final String id;
+  final String ingredientId;
+  final String ingredientName;
+  final DateTime at;
+  final double deltaMl;
+  final AdjustReason reason;
+
+  /// Cost basis for stock added this way. Only meaningful when [deltaMl] is
+  /// positive; lets an opening balance carry its original price.
+  final double costPerMl;
+
+  final String note;
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'ingredientId': ingredientId,
+    'ingredientName': ingredientName,
+    'at': at.toIso8601String(),
+    'deltaMl': deltaMl,
+    'reason': reason.index,
+    'costPerMl': costPerMl,
+    'note': note,
+  };
+
+  factory StockAdjustment.fromJson(Map<String, dynamic> j) => StockAdjustment(
+    id: j['id'] as String,
+    ingredientId: j['ingredientId'] as String,
+    ingredientName: j['ingredientName'] as String? ?? '',
+    at:
+        DateTime.tryParse(j['at'] as String? ?? '') ??
+        DateTime.fromMillisecondsSinceEpoch(0),
+    deltaMl: (j['deltaMl'] as num?)?.toDouble() ?? 0,
+    reason:
+        AdjustReason.values[((j['reason'] as num?)?.toInt() ?? 1).clamp(
+          0,
+          AdjustReason.values.length - 1,
+        )],
+    costPerMl: (j['costPerMl'] as num?)?.toDouble() ?? 0,
+    note: j['note'] as String? ?? '',
+  );
+}
+
+/// One line of an ingredient's stock ledger, for display.
+class StockLedgerEntry {
+  StockLedgerEntry({
+    required this.at,
+    required this.deltaMl,
+    required this.label,
+    required this.icon,
+    required this.balanceAfter,
+    this.detail = '',
+    this.sourceId,
+    this.canUndo = false,
+  });
+
+  final DateTime at;
+  final double deltaMl;
+  final String label;
+  final IconData icon;
+  final double balanceAfter;
+  final String detail;
+  final String? sourceId;
+  final bool canUndo;
 }
 
 class MixLine {
@@ -541,7 +683,7 @@ class MixLine {
   final double cost;
   final String? ingredientId;
 
-  /// Kept so flavor percentage can exclude additives and thinners.
+  /// Kept so the flavor percentage can exclude additives and thinners.
   final IngredientKind kind;
 
   final double vgFraction;
@@ -739,6 +881,25 @@ class StockIssue {
   double get shortMl => neededMl - haveMl;
 }
 
+List<StockIssue> checkStock(MixResult r, Iterable<Ingredient> inventory) {
+  final needed = <String, double>{};
+  for (final l in r.lines) {
+    final id = l.ingredientId;
+    if (id == null || l.ml <= 0) continue;
+    needed[id] = (needed[id] ?? 0) + l.ml;
+  }
+  final issues = <StockIssue>[];
+  for (final ing in inventory) {
+    final need = needed[ing.id];
+    if (need == null) continue;
+    if (need > ing.stockMl + 1e-9) {
+      issues.add(StockIssue(ing.displayName, need, ing.stockMl));
+    }
+  }
+  issues.sort((a, b) => b.shortMl.compareTo(a.shortMl));
+  return issues;
+}
+
 /// Cost of the physical parts of a batch: bottles plus per-batch
 /// consumables. Bottles are counted whole, because mixing 100 mL into
 /// 30 mL bottles uses four of them, not 3.33.
@@ -782,25 +943,6 @@ double? maxBatchMl(
   return worst == null ? null : worst * referenceMl;
 }
 
-List<StockIssue> checkStock(MixResult r, Iterable<Ingredient> inventory) {
-  final needed = <String, double>{};
-  for (final l in r.lines) {
-    final id = l.ingredientId;
-    if (id == null || l.ml <= 0) continue;
-    needed[id] = (needed[id] ?? 0) + l.ml;
-  }
-  final issues = <StockIssue>[];
-  for (final ing in inventory) {
-    final need = needed[ing.id];
-    if (need == null) continue;
-    if (need > ing.stockMl + 1e-9) {
-      issues.add(StockIssue(ing.displayName, need, ing.stockMl));
-    }
-  }
-  issues.sort((a, b) => b.shortMl.compareTo(a.shortMl));
-  return issues;
-}
-
 class MixLogLine {
   MixLogLine({
     required this.name,
@@ -813,8 +955,15 @@ class MixLogLine {
 
   final String name;
   final String? ingredientId;
+
+  /// What the mix called for. Under event sourcing this is what the ledger
+  /// subtracts — there is no flooring at zero.
   final double requestedMl;
+
+  /// Equal to [requestedMl] from schema v9 onward. Kept so pre-v9 logs,
+  /// where a short mix deducted less than it asked for, still read back.
   final double deductedMl;
+
   final double grams;
   final double cost;
 
@@ -876,6 +1025,11 @@ class MixLog {
 
   final double totalGrams;
   final double totalCost;
+
+  /// Bottles and consumables at mix time. Separate from [totalCost] so the
+  /// juice cost stays comparable across batches.
+  final double hardwareCost;
+
   final List<MixLogLine> lines;
   final bool weighed;
 
@@ -883,10 +1037,6 @@ class MixLog {
   final int? rating;
   final String tastingNotes;
   final DateTime? ratedAt;
-
-  /// Bottles and consumables at mix time. Separate from [totalCost] so the
-  /// juice cost stays comparable across batches.
-  final double hardwareCost;
 
   double get grandTotalCost => totalCost + hardwareCost;
 
@@ -989,9 +1139,8 @@ class MixLog {
 /// In [PercentMode.byWeight], a percentage is a share of the finished mass
 /// rather than the batch volume. Because the finished mass depends on the
 /// concentrate amounts, which depend on the mass, this is solved by
-/// fixed-point iteration. The map is a strong contraction (the derivative is
-/// roughly `Σpᵢ(1 − ρbase/ρᵢ)/100`, well under 1 for realistic densities), so
-/// it settles in a handful of passes.
+/// fixed-point iteration. The map is a strong contraction, so it settles in
+/// a handful of passes.
 ///
 /// Ingredients selected more than once are coalesced into a single line with
 /// their percentages summed, so one bottle is never weighed twice.
@@ -1053,6 +1202,7 @@ MixResult calculateMix({
           '(${nic.nicMgPerMl.toStringAsFixed(0)} mg/mL).',
         );
       } else {
+        // Nicotine is inherently volumetric: mg/mL of the finished volume.
         final ml = amountMl * targetNic / nic.nicMgPerMl;
         final carrier = clampd(nic.carrierVg, 0, 1);
         if (maxVg) {
@@ -1204,9 +1354,7 @@ MixResult calculateMix({
     mass = next;
     result = attempt(mass);
   }
-  if (!converged && (result.totalGrams - mass).abs() < 1e-6) {
-    converged = true;
-  }
+  if (!converged && (result.totalGrams - mass).abs() < 1e-6) converged = true;
 
   return MixResult(result.lines, [
     ...result.warnings,
