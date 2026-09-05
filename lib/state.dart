@@ -24,6 +24,23 @@ String _deviceShort = 'local';
 String newId() =>
     '${DateTime.now().microsecondsSinceEpoch}-${_idCounter++}-$_deviceShort';
 
+/// Thrown when stored data was written by a newer build. Restore and merge
+/// already refuse in this case; loading has to as well, or the older build
+/// drops the fields it does not know and re-stamps the version downward,
+/// after which the newer build's migrations never run.
+class SchemaTooNewException implements Exception {
+  const SchemaTooNewException(this.stored, this.supported);
+
+  final int stored;
+  final int supported;
+
+  @override
+  String toString() =>
+      'Your data is schema v$stored, saved by a newer version of MixLab. '
+      'This build reads up to v$supported. Update MixLab to open it — '
+      'loading it here would discard the newer fields.';
+}
+
 class AppState extends ChangeNotifier {
   AppState({bool autoLoad = true}) {
     if (autoLoad) {
@@ -213,11 +230,11 @@ class AppState extends ChangeNotifier {
     var v = prefs.getInt(_kSchema) ?? (hasData ? 1 : currentSchema);
 
     if (v > currentSchema) {
-      debugPrint(
-        'Stored data is schema v$v, newer than this build '
-        '(v$currentSchema); loading as-is.',
-      );
-      return;
+      // Loading as-is would drop every field this build does not know,
+      // and the next _write() would re-stamp the store at currentSchema —
+      // silently down-grading data the newer build can no longer migrate.
+      // Refuse, exactly as restore and merge already do.
+      throw SchemaTooNewException(v, currentSchema);
     }
 
     if (v < 2) {
@@ -461,7 +478,7 @@ class AppState extends ChangeNotifier {
   // ------------------------------------------------------------ export/import
 
   String exportJson() => const JsonEncoder.withIndent('  ').convert({
-    'app': 'mixlab',
+    'app': backupAppMarker,
     'schema': currentSchema,
     'deviceId': deviceId,
     'exportedAt': DateTime.now().toIso8601String(),
@@ -487,25 +504,19 @@ class AppState extends ChangeNotifier {
   /// Wholesale restore. Everything local is discarded — this is the
   /// "put it back the way it was" path, not the sync path. For combining
   /// two devices use [previewMerge] and [applyMerge].
+  ///
+  /// The whole file is parsed into locals before anything local is
+  /// touched. A malformed record therefore throws with stored data intact,
+  /// rather than leaving the app empty and then persisting that emptiness.
   Future<String> restoreFromBackup(String raw) async {
-    final decoded = jsonDecode(raw);
-    if (decoded is! Map<String, dynamic>) {
-      throw const FormatException('Not an object at the top level.');
-    }
-    final schema = (decoded['schema'] as num?)?.toInt() ?? 1;
-    if (schema > currentSchema) {
-      throw FormatException(
-        'Backup schema v$schema is newer than this build '
-        '(v$currentSchema).',
-      );
-    }
+    final (decoded, schema) = decodeBackup(raw, currentSchema: currentSchema);
 
-    ingredients.clear();
-    recipes.clear();
-    mixLog.clear();
-    purchases.clear();
-    adjustments.clear();
-    tombstones.clear();
+    final newIngredients = <Ingredient>[];
+    final newRecipes = <Recipe>[];
+    final newMixLog = <MixLog>[];
+    final newPurchases = <Purchase>[];
+    final newAdjustments = <StockAdjustment>[];
+    final newTombstones = <Tombstone>[];
 
     for (final e in (decoded['ingredients'] as List? ?? const [])) {
       final j = e as Map<String, dynamic>;
@@ -514,32 +525,36 @@ class AppState extends ChangeNotifier {
         j['brand'] = b;
         j['name'] = n;
       }
-      ingredients.add(Ingredient.fromJson(j));
+      newIngredients.add(Ingredient.fromJson(j));
     }
     for (final e in (decoded['recipes'] as List? ?? const [])) {
-      recipes.add(Recipe.fromJson(e as Map<String, dynamic>));
+      newRecipes.add(Recipe.fromJson(e as Map<String, dynamic>));
     }
     for (final e in (decoded['mixLog'] as List? ?? const [])) {
-      mixLog.add(MixLog.fromJson(e as Map<String, dynamic>));
+      newMixLog.add(MixLog.fromJson(e as Map<String, dynamic>));
     }
     for (final e in (decoded['purchases'] as List? ?? const [])) {
-      purchases.add(Purchase.fromJson(e as Map<String, dynamic>));
+      newPurchases.add(Purchase.fromJson(e as Map<String, dynamic>));
     }
     for (final e in (decoded['adjustments'] as List? ?? const [])) {
-      adjustments.add(StockAdjustment.fromJson(e as Map<String, dynamic>));
+      newAdjustments.add(StockAdjustment.fromJson(e as Map<String, dynamic>));
     }
     for (final e in (decoded['tombstones'] as List? ?? const [])) {
-      tombstones.add(Tombstone.fromJson(e as Map<String, dynamic>));
+      newTombstones.add(Tombstone.fromJson(e as Map<String, dynamic>));
     }
+
+    final newSettings = decoded['settings'] == null
+        ? null
+        : Settings.fromJson(decoded['settings'] as Map<String, dynamic>);
 
     // A pre-v9 backup carries stock on the ingredient rather than in a
     // ledger, so seed opening balances or everything reads as zero.
     if (schema < 9) {
       final replayed = <String, double>{};
-      for (final p in purchases) {
+      for (final p in newPurchases) {
         replayed[p.ingredientId] = (replayed[p.ingredientId] ?? 0) + p.volumeMl;
       }
-      for (final l in mixLog) {
+      for (final l in newMixLog) {
         for (final line in l.lines) {
           final id = line.ingredientId;
           if (id == null) continue;
@@ -547,10 +562,10 @@ class AppState extends ChangeNotifier {
         }
       }
       final now = DateTime.now();
-      for (final e in ingredients) {
+      for (final e in newIngredients) {
         final delta = e.stockMl - (replayed[e.id] ?? 0);
         if (delta.abs() < 1e-9) continue;
-        adjustments.add(
+        newAdjustments.add(
           StockAdjustment(
             id: 'opening-${e.id}',
             ingredientId: e.id,
@@ -565,13 +580,30 @@ class AppState extends ChangeNotifier {
       }
     }
 
-    mixLog.sort((a, b) => b.mixedAt.compareTo(a.mixedAt));
-    purchases.sort((a, b) => b.at.compareTo(a.at));
-    adjustments.sort((a, b) => b.at.compareTo(a.at));
+    newMixLog.sort((a, b) => b.mixedAt.compareTo(a.mixedAt));
+    newPurchases.sort((a, b) => b.at.compareTo(a.at));
+    newAdjustments.sort((a, b) => b.at.compareTo(a.at));
 
-    if (decoded['settings'] != null) {
-      settings = Settings.fromJson(decoded['settings'] as Map<String, dynamic>);
-    }
+    // Nothing below here can throw, so the swap is all-or-nothing.
+    ingredients
+      ..clear()
+      ..addAll(newIngredients);
+    recipes
+      ..clear()
+      ..addAll(newRecipes);
+    mixLog
+      ..clear()
+      ..addAll(newMixLog);
+    purchases
+      ..clear()
+      ..addAll(newPurchases);
+    adjustments
+      ..clear()
+      ..addAll(newAdjustments);
+    tombstones
+      ..clear()
+      ..addAll(newTombstones);
+    if (newSettings != null) settings = newSettings;
 
     recomputeStock();
     notifyListeners();
@@ -1380,8 +1412,13 @@ class AppState extends ChangeNotifier {
   }
 
   void updateSettings(Settings s) {
+    // The cost basis is an input to the ledger replay, so changing it
+    // rewrites stock value and every historical mix cost. Without this the
+    // stale figures are not just displayed, they are persisted below.
+    final basisChanged = s.costBasis != settings.costBasis;
     s.updatedAt = DateTime.now();
     settings = s;
+    if (basisChanged) recomputeStock();
     notifyListeners();
     _save();
   }
