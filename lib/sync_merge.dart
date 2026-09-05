@@ -7,6 +7,41 @@ import 'package:mixlab/models/mix.dart';
 import 'package:mixlab/models/recipe.dart';
 import 'package:mixlab/models/settings.dart';
 
+/// Marker written into every export. Checked before a file is allowed to
+/// touch stored data, so picking the wrong `.json` fails loudly instead of
+/// quietly restoring nothing over everything.
+const backupAppMarker = 'mixlab';
+
+/// Decodes and vets a backup envelope. Throws [FormatException] unless the
+/// file is recognisably a MixLab export this build can read. Returns the
+/// decoded object and its schema version.
+///
+/// Every export MixLab has ever written carries the marker, so a missing
+/// one means the file is not ours.
+(Map<String, dynamic>, int) decodeBackup(
+  String rawJson, {
+  required int currentSchema,
+}) {
+  final decoded = jsonDecode(rawJson);
+  if (decoded is! Map<String, dynamic>) {
+    throw const FormatException('Not an object at the top level.');
+  }
+  if (decoded['app'] != backupAppMarker) {
+    throw const FormatException(
+      'That file is not a MixLab backup. Export one from '
+      'Settings on the other device.',
+    );
+  }
+  final schema = (decoded['schema'] as num?)?.toInt() ?? 1;
+  if (schema > currentSchema) {
+    throw FormatException(
+      'That backup is schema v$schema, newer than this build '
+      '(v$currentSchema). Update first.',
+    );
+  }
+  return (decoded, schema);
+}
+
 enum MergeAction { add, update, delete }
 
 String mergeActionLabel(MergeAction a) => switch (a) {
@@ -160,17 +195,7 @@ MergePlan buildMergePlan({
   required Settings settings,
   required int currentSchema,
 }) {
-  final decoded = jsonDecode(rawJson);
-  if (decoded is! Map<String, dynamic>) {
-    throw const FormatException('Not an object at the top level.');
-  }
-  final schema = (decoded['schema'] as num?)?.toInt() ?? 1;
-  if (schema > currentSchema) {
-    throw FormatException(
-      'That backup is schema v$schema, newer than this build '
-      '(v$currentSchema). Update first.',
-    );
-  }
+  final (decoded, _) = decodeBackup(rawJson, currentSchema: currentSchema);
 
   final items = <MergeItem>[];
 

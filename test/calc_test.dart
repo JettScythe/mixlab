@@ -932,9 +932,62 @@ void main() {
       SharedPreferences.setMockInitialValues({});
       final s = AppState(autoLoad: false);
       expect(
-        () => s.restoreFromBackup('{"schema": 999}'),
+        () => s.restoreFromBackup('{"app": "mixlab", "schema": 999}'),
         throwsA(isA<FormatException>()),
       );
+    });
+
+    test('rejects a file that is not a MixLab backup', () async {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      s.ingredients.add(flavor('keep'));
+      s.recipes.add(Recipe(id: 'keep-r', name: 'Keep'));
+
+      // Valid JSON, no marker — before, this wiped everything and
+      // reported "Restored 0 ingredients" as a success.
+      await expectLater(
+        s.restoreFromBackup('{"ingredients": [], "recipes": []}'),
+        throwsA(isA<FormatException>()),
+      );
+      await expectLater(
+        s.restoreFromBackup('{"app": "something-else", "ingredients": []}'),
+        throwsA(isA<FormatException>()),
+      );
+
+      expect(s.ingredients.single.id, 'keep');
+      expect(s.recipes.single.id, 'keep-r');
+    });
+
+    test('a corrupt record leaves existing data untouched', () async {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      s.ingredients.add(flavor('keep'));
+      s.recipes.add(Recipe(id: 'keep-r', name: 'Keep'));
+      s.settings.currency = 'GBP';
+
+      // Second ingredient has no name, so Ingredient.fromJson throws
+      // partway through. The restore must be all-or-nothing.
+      await expectLater(
+        s.restoreFromBackup(
+          jsonEncode({
+            'app': 'mixlab',
+            'schema': AppState.currentSchema,
+            'settings': Settings(currency: 'EUR').toJson(),
+            'ingredients': [
+              {'id': 'good', 'name': 'OK', 'kind': 3, 'density': 1.0},
+              {'id': 'bad', 'kind': 3, 'density': 1.0},
+            ],
+            'recipes': [
+              {'id': 'incoming-r', 'name': 'Incoming'},
+            ],
+          }),
+        ),
+        throwsA(anything),
+      );
+
+      expect(s.ingredients.single.id, 'keep');
+      expect(s.recipes.single.id, 'keep-r');
+      expect(s.settings.currency, 'GBP');
     });
   });
 
@@ -977,6 +1030,7 @@ void main() {
       final s = AppState(autoLoad: false);
       await s.restoreFromBackup(
         jsonEncode({
+          'app': 'mixlab',
           'schema': 1,
           'ingredients': [
             {'id': 'z', 'name': 'CAP Sweet Cream', 'kind': 3, 'density': 1.0},
@@ -1358,6 +1412,7 @@ void main() {
       final s = AppState(autoLoad: false);
       await s.restoreFromBackup(
         jsonEncode({
+          'app': 'mixlab',
           'schema': 8,
           'ingredients': [
             {
@@ -1376,6 +1431,35 @@ void main() {
       // opening balances the ledger would replay to zero.
       expect(s.byId('v')!.stockMl, closeTo(500, 1e-9));
       expect(s.adjustments.single.reason, AdjustReason.opening);
+    });
+
+    test('data from a newer build is refused, not down-stamped', () async {
+      final future = AppState.currentSchema + 1;
+      SharedPreferences.setMockInitialValues({
+        'schema_version': future,
+        'ingredients_v1': jsonEncode([
+          {
+            'id': 'a',
+            'name': 'Strawberry',
+            'brand': 'TFA',
+            'kind': 3,
+            'density': 1.0,
+            'somethingNewerBuildsKnow': 42,
+          },
+        ]),
+      });
+
+      final s = AppState();
+      await waitReady(s);
+
+      // The recovery screen, not a silent partial load.
+      expect(s.loadError, isNotNull);
+      expect(s.loadError, contains('v$future'));
+
+      // And the store still says v$future, so the newer build's
+      // migrations can still run against it.
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getInt('schema_version'), future);
     });
   });
   group('recipe detail aggregates', () {
@@ -2142,7 +2226,15 @@ some line with no numbers at all
     test('refuses a backup from a newer schema', () {
       final (a, _) = twoDevices();
       expect(
-        () => a.previewMerge('{"schema": 999}'),
+        () => a.previewMerge('{"app": "mixlab", "schema": 999}'),
+        throwsA(isA<FormatException>()),
+      );
+    });
+
+    test('refuses a file that is not a MixLab backup', () {
+      final (a, _) = twoDevices();
+      expect(
+        () => a.previewMerge('{"ingredients": []}'),
         throwsA(isA<FormatException>()),
       );
     });
@@ -2277,10 +2369,14 @@ some line with no numbers at all
       drawMix(s, 100);
       expect(s.mixLog.first.totalCost, closeTo(20, 1e-9));
 
+      // updateSettings alone must be enough — the Settings screen promises
+      // the change "applies to your whole history", and no other recompute
+      // happens before the stale figures get persisted.
       s.updateSettings(Settings(costBasis: CostBasis.fifo));
-      s.recomputeStock();
       // The same historical mix now costs what the oldest liquid cost.
       expect(s.mixLog.first.totalCost, closeTo(10, 1e-9));
+      expect(s.byId('a')!.costPerMl, closeTo(0.30, 1e-9));
+      expect(s.stockValue, closeTo(30, 1e-9));
     });
 
     test('the old lifetime average no longer lingers after stock is used', () {
