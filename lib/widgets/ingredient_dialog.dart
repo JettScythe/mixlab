@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:mixlab/models/enums.dart';
+import 'package:mixlab/models/ingredient.dart';
+import 'package:mixlab/models/units.dart';
 
-import '../models.dart';
 import '../state.dart';
 
 /// Opens the add/edit ingredient dialog. Returns the saved ingredient, or

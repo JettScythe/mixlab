@@ -2,7 +2,15 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mixlab/models.dart';
+import 'package:mixlab/models/calculate_mix.dart';
+import 'package:mixlab/models/enums.dart';
+import 'package:mixlab/models/ingredient.dart';
+import 'package:mixlab/models/ledger.dart';
+import 'package:mixlab/models/mix.dart';
+import 'package:mixlab/models/recipe.dart';
+import 'package:mixlab/models/settings.dart';
+import 'package:mixlab/models/step_plan.dart';
+import 'package:mixlab/models/units.dart';
 import 'package:mixlab/state.dart';
 import 'package:mixlab/sync_merge.dart';
 import 'package:mixlab/widgets/ingredient_picker.dart';
@@ -1374,8 +1382,7 @@ void main() {
     test('spend and volume sum only that recipe\'s mixes', () {
       SharedPreferences.setMockInitialValues({});
       final s = AppState(autoLoad: false);
-      final f = flavor('a', stock: 1000); // 0.10/mL
-      s.ingredients.add(f);
+      final f = addStocked(s, flavor('a'), 1000); // 0.10/mL via the ledger
       s.recipes.add(Recipe(id: 'r1', name: 'Target'));
 
       MixResult mix(double ml) => calculateMix(
@@ -1824,7 +1831,7 @@ some line with no numbers at all
           emptyBottleCost: 1,
           emptyBottleMl: 30,
         );
-      final f = flavor('a', stock: 1000);
+      final f = addStocked(s, flavor('a'), 1000);
       s.ingredients.add(f);
 
       final log = s.logMix(
@@ -2157,6 +2164,217 @@ some line with no numbers at all
       expect(plan.acceptSettings, isFalse);
       await a.applyMerge(plan);
       expect(a.settings.currency, 'USD');
+    });
+  });
+
+  group('cost basis', () {
+    /// Two purchases at different prices, then a draw.
+    AppState twoPrices(CostBasis basis) {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false)
+        ..settings = Settings(costBasis: basis);
+      final f = flavor('a')..stockMl = 0;
+      s.ingredients.add(f);
+      // 100 mL at 0.10, then 100 mL at 0.30.
+      s.purchases.add(
+        Purchase(
+          id: 'p1',
+          ingredientId: 'a',
+          ingredientName: 'a',
+          at: DateTime(2026, 1, 1),
+          volumeMl: 100,
+          cost: 10,
+          prevStockMl: 0,
+          prevCostPerMl: 0,
+          prevAvgCostPerMl: 0,
+        ),
+      );
+      s.purchases.add(
+        Purchase(
+          id: 'p2',
+          ingredientId: 'a',
+          ingredientName: 'a',
+          at: DateTime(2026, 2, 1),
+          volumeMl: 100,
+          cost: 30,
+          prevStockMl: 0,
+          prevCostPerMl: 0,
+          prevAvgCostPerMl: 0,
+        ),
+      );
+      s.recomputeStock();
+      return s;
+    }
+
+    void drawMix(AppState s, double ml, {DateTime? at}) {
+      s.mixLog.insert(
+        0,
+        MixLog(
+          id: 'mix-$ml-${at?.month ?? 0}',
+          mixedAt: at ?? DateTime(2026, 3, 1),
+          label: 'Draw',
+          batchMl: ml,
+          targetNic: 0,
+          targetVgPercent: 0,
+          totalGrams: 0,
+          totalCost: 0,
+          lines: [
+            MixLogLine(
+              name: 'a',
+              ingredientId: 'a',
+              requestedMl: ml,
+              deductedMl: ml,
+              grams: ml,
+              cost: 0,
+            ),
+          ],
+        ),
+      );
+      s.recomputeStock();
+    }
+
+    test('moving average blends every layer into one price', () {
+      final s = twoPrices(CostBasis.movingAverage);
+      expect(s.byId('a')!.stockMl, closeTo(200, 1e-9));
+      expect(s.byId('a')!.costPerMl, closeTo(0.20, 1e-9));
+
+      drawMix(s, 50);
+      // Drawing does not move a blended basis.
+      expect(s.byId('a')!.costPerMl, closeTo(0.20, 1e-9));
+      expect(s.mixLog.first.totalCost, closeTo(10.0, 1e-9)); // 50 * 0.20
+    });
+
+    test('FIFO consumes the cheap layer first', () {
+      final s = twoPrices(CostBasis.fifo);
+      expect(s.byId('a')!.costPerMl, closeTo(0.20, 1e-9)); // 40 / 200
+
+      drawMix(s, 50);
+      // Entirely from the 0.10 layer.
+      expect(s.mixLog.first.totalCost, closeTo(5.0, 1e-9));
+      // 50 left at 0.10 plus 100 at 0.30 => 35 / 150.
+      expect(s.byId('a')!.costPerMl, closeTo(35 / 150, 1e-9));
+    });
+
+    test('a FIFO draw can span two price layers', () {
+      final s = twoPrices(CostBasis.fifo);
+      drawMix(s, 150); // 100 at 0.10, then 50 at 0.30
+      expect(s.mixLog.first.totalCost, closeTo(10 + 15, 1e-9));
+      expect(s.byId('a')!.stockMl, closeTo(50, 1e-9));
+      expect(s.byId('a')!.costPerMl, closeTo(0.30, 1e-9)); // only the dear
+    });
+
+    test('the two policies genuinely differ on the same ledger', () {
+      final avg = twoPrices(CostBasis.movingAverage);
+      final fifo = twoPrices(CostBasis.fifo);
+      drawMix(avg, 100);
+      drawMix(fifo, 100);
+      expect(avg.mixLog.first.totalCost, closeTo(20, 1e-9));
+      expect(fifo.mixLog.first.totalCost, closeTo(10, 1e-9));
+    });
+
+    test('switching basis is retroactive', () {
+      final s = twoPrices(CostBasis.movingAverage);
+      drawMix(s, 100);
+      expect(s.mixLog.first.totalCost, closeTo(20, 1e-9));
+
+      s.updateSettings(Settings(costBasis: CostBasis.fifo));
+      s.recomputeStock();
+      // The same historical mix now costs what the oldest liquid cost.
+      expect(s.mixLog.first.totalCost, closeTo(10, 1e-9));
+    });
+
+    test('the old lifetime average no longer lingers after stock is used', () {
+      // The bug this fixes: buy cheap, use it all, buy dear — the basis
+      // should reflect what is in the bottle, not what was ever bought.
+      final s = twoPrices(CostBasis.movingAverage);
+      drawMix(s, 100, at: DateTime(2026, 1, 15)); // all of the cheap layer
+
+      // Only the 0.30 purchase remains.
+      expect(s.byId('a')!.stockMl, closeTo(100, 1e-9));
+      expect(s.byId('a')!.costPerMl, closeTo(0.30, 1e-9));
+      // A lifetime average would have said 0.20 forever.
+    });
+
+    test('drawing beyond stock is priced at the last known rate', () {
+      final s = twoPrices(CostBasis.fifo);
+      drawMix(s, 250); // 50 mL more than exists
+
+      expect(s.byId('a')!.stockMl, closeTo(-50, 1e-9));
+      // 100*0.10 + 100*0.30 + 50*0.30 assumed.
+      expect(s.mixLog.first.totalCost, closeTo(10 + 30 + 15, 1e-9));
+      expect(s.mixLog.first.costEstimated, isTrue);
+      expect(s.byId('a')!.costPerMl, closeTo(0.30, 1e-9));
+    });
+
+    test('an ingredient with no ledger costs nothing and holds nothing', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      s.ingredients.add(flavor('lonely')..stockMl = 0);
+      s.recomputeStock();
+      expect(s.byId('lonely')!.stockMl, 0);
+      expect(s.byId('lonely')!.stockValue, 0);
+      // Falls back to the bottle price for display.
+      expect(s.byId('lonely')!.costPerMl, closeTo(0.10, 1e-9));
+    });
+
+    test('stock value equals volume times basis in both policies', () {
+      for (final b in CostBasis.values) {
+        final s = twoPrices(b);
+        drawMix(s, 30);
+        final e = s.byId('a')!;
+        expect(e.stockValue, closeTo(e.stockMl * e.costPerMl, 1e-6));
+      }
+    });
+
+    test('replay is deterministic when timestamps collide', () {
+      SharedPreferences.setMockInitialValues({});
+      final at = DateTime(2026, 1, 1);
+      final s = AppState(autoLoad: false)
+        ..settings = Settings(costBasis: CostBasis.fifo);
+      s.ingredients.add(flavor('a')..stockMl = 0);
+      for (final (id, cost) in [('p1', 10.0), ('p2', 30.0)]) {
+        s.purchases.add(
+          Purchase(
+            id: id,
+            ingredientId: 'a',
+            ingredientName: 'a',
+            at: at, // identical
+            volumeMl: 100,
+            cost: cost,
+            prevStockMl: 0,
+            prevCostPerMl: 0,
+            prevAvgCostPerMl: 0,
+          ),
+        );
+      }
+      s.recomputeStock();
+      final first = s.byId('a')!.costPerMl;
+      s.purchases.setAll(0, s.purchases.reversed.toList());
+      s.recomputeStock();
+      // Ordering falls back to id, so list order does not change the answer.
+      expect(s.byId('a')!.costPerMl, closeTo(first, 1e-9));
+    });
+
+    test('shipping still lands in the basis', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      s.ingredients.add(flavor('a')..stockMl = 0);
+      s.recordPurchase(
+        ingredientId: 'a',
+        volumeMl: 100,
+        cost: 10,
+        shippingCost: 5,
+      );
+      expect(s.byId('a')!.costPerMl, closeTo(0.15, 1e-9));
+    });
+
+    test('basis setting round-trips', () {
+      final back = Settings.fromJson(
+        jsonDecode(jsonEncode(Settings(costBasis: CostBasis.fifo).toJson()))
+            as Map<String, dynamic>,
+      );
+      expect(back.costBasis, CostBasis.fifo);
+      expect(Settings.fromJson({}).costBasis, CostBasis.movingAverage);
     });
   });
 }

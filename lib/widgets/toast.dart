@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-
-import '../models.dart';
+import 'package:mixlab/models/units.dart';
 
 /// Shows a snackbar, replacing any that is already visible so rapid actions
 /// do not queue up behind each other.

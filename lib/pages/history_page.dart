@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:mixlab/models/mix.dart';
+import 'package:mixlab/models/settings.dart';
+import 'package:mixlab/models/units.dart';
 
-import '../models.dart';
 import '../state.dart';
 import '../theme.dart';
 import '../widgets/empty_state.dart';
@@ -239,6 +241,18 @@ class _HistoryPageState extends State<HistoryPage> {
                       '${money(l.hardwareCost, set)} = '
                       '${money(l.grandTotalCost, set)}',
                       style: theme.textTheme.bodySmall,
+                    ),
+                  ),
+
+                if (l.costEstimated)
+                  Padding(
+                    padding: const EdgeInsets.only(top: Gap.xs),
+                    child: Text(
+                      'Part of this mix drew more than the ledger held, so '
+                      'its cost is estimated from the last known price.',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.tertiary,
+                      ),
                     ),
                   ),
 

@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:mixlab/models/mix.dart';
+import 'package:mixlab/models/recipe.dart';
+import 'package:mixlab/models/settings.dart';
+import 'package:mixlab/models/units.dart';
 
-import '../models.dart';
 import '../state.dart';
 import '../theme.dart';
 import '../widgets/star_rating.dart';

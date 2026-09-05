@@ -4,8 +4,10 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:mixlab/models/enums.dart';
+import 'package:mixlab/models/settings.dart';
+import 'package:mixlab/models/units.dart';
 
-import '../models.dart';
 import '../state.dart';
 import '../theme.dart';
 import '../widgets/toast.dart';
@@ -48,6 +50,7 @@ class _SettingsPageState extends State<SettingsPage> {
   late PercentMode defaultMode;
   late int themeMode;
   late bool includeHardware;
+  late CostBasis costBasis;
 
   AppState get s => widget.state;
 
@@ -79,6 +82,7 @@ class _SettingsPageState extends State<SettingsPage> {
     defaultMode = c.defaultPercentMode;
     themeMode = c.themeMode;
     includeHardware = c.includeHardware;
+    costBasis = c.costBasis;
   }
 
   /// Re-reads every control from settings, after an import or a reset.
@@ -107,6 +111,7 @@ class _SettingsPageState extends State<SettingsPage> {
     defaultMode = c.defaultPercentMode;
     themeMode = c.themeMode;
     includeHardware = c.includeHardware;
+    costBasis = c.costBasis;
   }
 
   Future<void> _merge() async {
@@ -281,7 +286,32 @@ class _SettingsPageState extends State<SettingsPage> {
                 Gap.vXs,
                 _hint(theme, percentModeHint(defaultMode)),
               ]),
-
+              _card(theme, 'Cost basis', [
+                _hint(
+                  theme,
+                  'How the cost of stock you use is worked out. Applies to your '
+                  'whole history, so switching changes past mix costs too.',
+                ),
+                Gap.vMd,
+                SegmentedButton<CostBasis>(
+                  segments: [
+                    for (final b in CostBasis.values)
+                      ButtonSegment(value: b, label: Text(costBasisLabel(b))),
+                  ],
+                  selected: {costBasis},
+                  onSelectionChanged: (v) =>
+                      setState(() => costBasis = v.first),
+                ),
+                Gap.vXs,
+                _hint(theme, costBasisHint(costBasis)),
+                Gap.vSm,
+                _hint(
+                  theme,
+                  'Withdrawals beyond what the ledger holds are priced at the '
+                  'last known rate.',
+                ),
+              ]),
+              const SizedBox(height: 16),
               _card(theme, 'Hardware costs', [
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
@@ -453,6 +483,7 @@ class _SettingsPageState extends State<SettingsPage> {
         emptyBottleCost: _v(bottleCost, 0),
         emptyBottleMl: _v(bottleMl, old.emptyBottleMl),
         consumablesCost: _v(consumables, 0),
+        costBasis: costBasis,
       ),
     );
     showToast(context, 'Settings saved.');

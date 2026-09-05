@@ -2,10 +2,18 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:mixlab/cost_basis.dart';
+import 'package:mixlab/models/calculate_mix.dart';
+import 'package:mixlab/models/enums.dart';
+import 'package:mixlab/models/ingredient.dart';
+import 'package:mixlab/models/ledger.dart';
+import 'package:mixlab/models/mix.dart';
+import 'package:mixlab/models/recipe.dart';
+import 'package:mixlab/models/settings.dart';
+import 'package:mixlab/models/units.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/material.dart' show IconData, Icons;
 
-import 'models.dart';
 import 'sync_merge.dart';
 
 int _idCounter = 0;
@@ -38,7 +46,7 @@ class AppState extends ChangeNotifier {
   /// restored file cannot give two installs the same identity.
   static const _kDeviceId = 'device_id';
 
-  static const currentSchema = 10;
+  static const currentSchema = 11;
 
   static const _allKeys = [
     _kSchema,
@@ -386,7 +394,14 @@ class AppState extends ChangeNotifier {
       // untouched one, which is the behaviour we want.
       v = 10;
     }
-
+    if (v < 11) {
+      // v11 adds a cost basis setting and changes the meaning of
+      // avgCostPerMl from a lifetime average to the basis of stock
+      // actually on hand. Both are derived on load, so no transform is
+      // needed — the bump stops an older build presenting the new
+      // moving-average figures as if they were the old lifetime ones.
+      v = 11;
+    }
     await prefs.setInt(_kSchema, v);
   }
 
@@ -927,9 +942,7 @@ class AppState extends ChangeNotifier {
       if (e.densityLooksWrong(settings)) e,
   ];
 
-  double get stockValue =>
-      ingredients.fold(0.0, (a, e) => a + e.stockMl * e.costPerMl);
-
+  double get stockValue => ingredients.fold(0.0, (a, e) => a + e.stockValue);
   double get lifetimeMixCost => mixLog.fold(0.0, (a, l) => a + l.totalCost);
 
   double get lifetimeHardwareCost =>
@@ -1030,45 +1043,46 @@ class AppState extends ChangeNotifier {
 
   // ------------------------------------------------------------------ ledger
 
-  /// Recomputes derived stock and cost basis for every ingredient in one
-  /// pass over the ledger. Called after any mutation that touches it.
+  /// Replays the ledger to derive stock, cost basis and the cost of every
+  /// mix. Called after any mutation that touches the ledger, and after
+  /// loading or merging.
   ///
-  /// O(events + ingredients), so cheap enough to run eagerly rather than
-  /// caching per ingredient and risking staleness.
+  /// Mix costs are derived rather than frozen, so editing history — undoing
+  /// an old purchase, inserting a backdated one, switching cost basis —
+  /// updates the cost of every mix that came after it.
   void recomputeStock() {
-    final vol = <String, double>{};
-    final costVol = <String, double>{};
-    final costSum = <String, double>{};
+    final replay = replayCosts(
+      purchases: purchases,
+      adjustments: adjustments,
+      mixLog: mixLog,
+      basis: settings.costBasis,
+    );
 
-    for (final p in purchases) {
-      vol[p.ingredientId] = (vol[p.ingredientId] ?? 0) + p.volumeMl;
-      if (p.volumeMl > 0) {
-        costVol[p.ingredientId] = (costVol[p.ingredientId] ?? 0) + p.volumeMl;
-        costSum[p.ingredientId] = (costSum[p.ingredientId] ?? 0) + p.totalCost;
-      }
+    for (final e in ingredients) {
+      e.stockMl = replay.stockMl[e.id] ?? 0;
+      e.avgCostPerMl = replay.basisPerMl[e.id] ?? 0;
+      e.stockValue = replay.stockValue[e.id] ?? 0;
     }
 
     for (final l in mixLog) {
-      for (final line in l.lines) {
-        final id = line.ingredientId;
-        if (id == null) continue;
-        vol[id] = (vol[id] ?? 0) - line.requestedMl;
+      var total = 0.0;
+      var estimated = false;
+      for (var i = 0; i < l.lines.length; i++) {
+        final line = l.lines[i];
+        if (line.ingredientId == null) {
+          // Untracked PG or VG has no ledger to draw from, so whatever was
+          // recorded at mix time stands.
+          total += line.cost;
+          continue;
+        }
+        final d = replay.draws[mixDrawKey(l.id, i)];
+        if (d == null) continue;
+        line.cost = d.cost;
+        total += d.cost;
+        if (d.estimated) estimated = true;
       }
-    }
-
-    for (final a in adjustments) {
-      vol[a.ingredientId] = (vol[a.ingredientId] ?? 0) + a.deltaMl;
-      if (a.deltaMl > 0 && a.costPerMl > 0) {
-        costVol[a.ingredientId] = (costVol[a.ingredientId] ?? 0) + a.deltaMl;
-        costSum[a.ingredientId] =
-            (costSum[a.ingredientId] ?? 0) + a.deltaMl * a.costPerMl;
-      }
-    }
-
-    for (final e in ingredients) {
-      e.stockMl = vol[e.id] ?? 0;
-      final cv = costVol[e.id] ?? 0;
-      e.avgCostPerMl = cv > 0 ? (costSum[e.id] ?? 0) / cv : 0;
+      l.totalCost = total;
+      l.costEstimated = estimated;
     }
   }
 

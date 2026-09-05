@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:mixlab/models/enums.dart';
+import 'package:mixlab/models/ingredient.dart';
+import 'package:mixlab/models/ledger.dart';
+import 'package:mixlab/models/units.dart';
 
-import '../models.dart';
 import '../state.dart';
 import '../theme.dart';
 import '../widgets/empty_state.dart';
@@ -81,8 +84,14 @@ class StockHistoryPage extends StatelessWidget {
                   Text(
                     '${ing.stockGrams.toStringAsFixed(1)} g  •  '
                     '${moneyPerMl(ing.costPerMl, set)}  •  worth '
-                    '${money(ing.stockMl * ing.costPerMl, set)}',
+                    '${money(ing.stockValue, set)}',
                     style: theme.textTheme.bodySmall,
+                  ),
+                  Text(
+                    '${costBasisLabel(set.costBasis)} basis',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.outline,
+                    ),
                   ),
                   if (ing.stockIsNegative) ...[
                     Gap.vMd,

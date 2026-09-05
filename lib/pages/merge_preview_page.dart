@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:mixlab/models/enums.dart';
 
-import '../models.dart';
 import '../state.dart';
 import '../sync_merge.dart';
 import '../theme.dart';

@@ -1,4 +1,6 @@
-import 'models.dart';
+import 'package:mixlab/models/enums.dart';
+import 'package:mixlab/models/ingredient.dart';
+import 'package:mixlab/models/units.dart';
 
 /// One parsed ingredient line from pasted recipe text.
 class ParsedLine {
