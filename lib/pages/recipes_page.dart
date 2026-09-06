@@ -35,6 +35,8 @@ class _RecipesPageState extends State<RecipesPage> {
   final _search = TextEditingController();
   _Sort _sort = _Sort.name;
   bool _canMakeOnly = false;
+  bool _favoritesOnly = false;
+  String? _tagFilter;
 
   AppState get state => widget.state;
 
@@ -43,6 +45,10 @@ class _RecipesPageState extends State<RecipesPage> {
     _search.dispose();
     super.dispose();
   }
+
+  /// Every tag in use, alphabetically, for the filter picker.
+  List<String> get _allTags =>
+      {for (final r in state.recipes) ...r.tags}.toList()..sort();
 
   static String _ago(DateTime d) {
     final days = DateTime.now().difference(d).inDays;
@@ -59,9 +65,12 @@ class _RecipesPageState extends State<RecipesPage> {
   List<Recipe> get _visible {
     final q = _search.text.trim().toLowerCase();
     final list = state.recipes.where((r) {
+      if (_favoritesOnly && !r.favorite) return false;
+      if (_tagFilter != null && !r.hasTag(_tagFilter!)) return false;
       if (q.isEmpty) return true;
       if (r.name.toLowerCase().contains(q)) return true;
       if (r.notes.toLowerCase().contains(q)) return true;
+      if (r.tags.any((t) => t.contains(q))) return true;
       return r.flavors.any((f) {
         final ing = state.byId(f.ingredientId);
         final label = ing?.displayName ?? f.name;
@@ -71,19 +80,30 @@ class _RecipesPageState extends State<RecipesPage> {
 
     if (_canMakeOnly) list.removeWhere((r) => !state.canMakeNow(r));
 
-    list.sort(switch (_sort) {
-      _Sort.name => (a, b) => a.name.toLowerCase().compareTo(
-        b.name.toLowerCase(),
-      ),
-      _Sort.flavorCount => (a, b) => b.flavors.length.compareTo(
-        a.flavors.length,
-      ),
-      _Sort.flavorPercent => (a, b) => b.totalFlavorPercent.compareTo(
-        a.totalFlavorPercent,
-      ),
-      _Sort.nicotine => (a, b) => b.targetNic.compareTo(a.targetNic),
+    // One comparator, not two sorts: List.sort is only stable for small
+    // lists, so a "favorites first" second pass would scramble the chosen
+    // order above ~32 recipes.
+    list.sort((a, b) {
+      final byFavorite = (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0);
+      if (byFavorite != 0) return byFavorite;
+      return switch (_sort) {
+        _Sort.name => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+        _Sort.flavorCount => b.flavors.length.compareTo(a.flavors.length),
+        _Sort.flavorPercent => b.totalFlavorPercent.compareTo(
+          a.totalFlavorPercent,
+        ),
+        _Sort.nicotine => b.targetNic.compareTo(a.targetNic),
+      };
     });
     return list;
+  }
+
+  void _toggleFavorite(Recipe r) {
+    // Fields are mutable and updateRecipe replaces the element in place;
+    // it stamps updatedAt itself, which is what makes the change sync.
+    r.favorite = !r.favorite;
+    state.updateRecipe(r);
+    setState(() {});
   }
 
   @override
@@ -154,6 +174,33 @@ class _RecipesPageState extends State<RecipesPage> {
                 selected: _canMakeOnly,
                 onSelected: (v) => setState(() => _canMakeOnly = v),
               ),
+              Gap.hSm,
+              FilterChip(
+                label: const Text('Favorites'),
+                selected: _favoritesOnly,
+                onSelected: (v) => setState(() => _favoritesOnly = v),
+              ),
+              if (_allTags.isNotEmpty) ...[
+                Gap.hSm,
+                PopupMenuButton<String>(
+                  initialValue: _tagFilter ?? '',
+                  onSelected: (v) =>
+                      setState(() => _tagFilter = v.isEmpty ? null : v),
+                  tooltip: 'Filter by tag',
+                  itemBuilder: (context) => [
+                    // Not null: a null PopupMenuItem value means
+                    // "dismissed" and never reaches onSelected, so the
+                    // filter would be impossible to clear.
+                    const PopupMenuItem(value: '', child: Text('All tags')),
+                    for (final t in _allTags)
+                      PopupMenuItem(value: t, child: Text(t)),
+                  ],
+                  child: Chip(
+                    avatar: const Icon(Icons.label_outline, size: 18),
+                    label: Text(_tagFilter ?? 'Tags'),
+                  ),
+                ),
+              ],
             ],
           ),
           Gap.vSm,
@@ -230,6 +277,22 @@ class _RecipesPageState extends State<RecipesPage> {
             children: [
               Row(
                 children: [
+                  // A pin is a statement about the recipe; a tap target on
+                  // the card beats burying it in the menu.
+                  InkWell(
+                    onTap: () => _toggleFavorite(r),
+                    borderRadius: BorderRadius.circular(12),
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Icon(
+                        r.favorite ? Icons.star : Icons.star_border,
+                        size: 20,
+                        color: r.favorite
+                            ? theme.colorScheme.primary
+                            : theme.colorScheme.outline,
+                      ),
+                    ),
+                  ),
                   Expanded(
                     child: Text(
                       r.name,
@@ -329,6 +392,34 @@ class _RecipesPageState extends State<RecipesPage> {
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.outline,
                     ),
+                  ),
+                ),
+
+              if (r.tags.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: Gap.xs),
+                  child: Wrap(
+                    spacing: Gap.xs,
+                    runSpacing: Gap.xs,
+                    children: [
+                      for (final t in r.tags)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: Gap.sm,
+                            vertical: 1,
+                          ),
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.surfaceContainerHighest,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            t,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.outline,
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
 

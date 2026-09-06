@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mixlab/csv_export.dart';
 import 'package:mixlab/models/calculate_mix.dart';
 import 'package:mixlab/models/enums.dart';
 import 'package:mixlab/models/ingredient.dart';
@@ -64,6 +65,31 @@ Future<void> waitReady(AppState s) async {
     await Future<void>.delayed(const Duration(milliseconds: 5));
   }
   expect(s.isReady, isTrue, reason: 'AppState never finished loading');
+}
+
+/// Field count of one CSV line, honouring quoting. Used to check that data
+/// rows match their block header — a ragged CSV is useless in a
+/// spreadsheet.
+int csvRowCount(String line) {
+  var fields = 1;
+  var inQuotes = false;
+  for (var i = 0; i < line.length; i++) {
+    final c = line[i];
+    if (inQuotes) {
+      if (c == '"') {
+        if (i + 1 < line.length && line[i + 1] == '"') {
+          i++; // doubled quote — skip the second half
+        } else {
+          inQuotes = false;
+        }
+      }
+    } else if (c == '"') {
+      inQuotes = true;
+    } else if (c == ',') {
+      fields++;
+    }
+  }
+  return fields;
 }
 
 void main() {
@@ -2261,7 +2287,7 @@ void main() {
       expect(s.capacityFor(unpinned)!, greaterThan(1000));
     });
 
-    test('a v11 store migrates to v12 without touching its recipes', () async {
+    test('a v11 store migrates to v13 without touching its recipes', () async {
       SharedPreferences.setMockInitialValues({
         'schema_version': 11,
         'ingredients_v1': jsonEncode(<Object>[]),
@@ -2285,9 +2311,68 @@ void main() {
       expect(r.nicId, isNull);
       expect(r.targetNic, 3);
       expect(r.targetVgPercent, 70);
+      // v13 additions read as unpinned and untagged.
+      expect(r.favorite, isFalse);
+      expect(r.tags, isEmpty);
 
       final prefs = await SharedPreferences.getInstance();
-      expect(prefs.getInt('schema_version'), 12);
+      expect(prefs.getInt('schema_version'), AppState.currentSchema);
+    });
+
+    test(
+      'a v12 store migrates to v13 keeping its pins and gaining tags',
+      () async {
+        SharedPreferences.setMockInitialValues({
+          'schema_version': 12,
+          'ingredients_v1': jsonEncode(<Object>[]),
+          'recipes_v1': jsonEncode([
+            {
+              'id': 'r1',
+              'name': 'Old recipe',
+              'batchMl': 30,
+              'targetNic': 3,
+              'targetVgPercent': 70,
+              'nicId': 'nic-1',
+              'flavors': <Object>[],
+            },
+          ]),
+        });
+
+        final s = AppState();
+        await waitReady(s);
+        expect(s.loadError, isNull);
+
+        final r = s.recipeById('r1')!;
+        expect(r.nicId, 'nic-1');
+        expect(r.favorite, isFalse);
+        expect(r.tags, isEmpty);
+
+        final prefs = await SharedPreferences.getInstance();
+        expect(prefs.getInt('schema_version'), AppState.currentSchema);
+      },
+    );
+
+    test('tags normalise on assignment', () {
+      final r = Recipe(id: 'r', name: 'R')
+        ..setTags(['Fruit', ' SWEET ', 'fruit', '']);
+      expect(r.tags, ['fruit', 'sweet']);
+      // Exact matching: the filter values come from the tag set itself,
+      // so selecting 'fruit' must not also pull in 'fruit punch'.
+      expect(r.hasTag('fru'), isFalse);
+      expect(r.hasTag('sweet'), isTrue);
+      expect(r.hasTag('dairy'), isFalse);
+    });
+
+    test('tags normalise through the constructor too', () {
+      // The editor passes raw split text; a tag saved with a leading
+      // space would never match its own filter, and the whitespace
+      // compounds on every round trip through join(', ') + split(',').
+      final r = Recipe(
+        id: 'r',
+        name: 'R',
+        tags: ['Fruit', ' SWEET ', 'fruit', ''],
+      );
+      expect(r.tags, ['fruit', 'sweet']);
     });
 
     test('duplicating a recipe keeps its bases', () {
@@ -2830,6 +2915,9 @@ some line with no numbers at all
 
     test('per-mL keeps three decimals', () {
       expect(moneyPerMl(0.1234, Settings()), '0.123 USD/mL');
+      // Grouped like every other figure, but never a bare symbol —
+      // "$0.123/mL" reads as a typo next to "$1.03" totals.
+      expect(moneyPerMl(1234.5, Settings()), '1,234.500 USD/mL');
     });
   });
 
@@ -4263,6 +4351,127 @@ some line with no numbers at all
       );
       expect(back.costBasis, CostBasis.fifo);
       expect(Settings.fromJson({}).costBasis, CostBasis.movingAverage);
+    });
+  });
+
+  group('csv export', () {
+    test('fields quote only when they must', () {
+      expect(csvField('plain'), 'plain');
+      expect(csvField('has, comma'), '"has, comma"');
+      expect(csvField('say "hi"'), '"say ""hi"""');
+      expect(csvField('two\nlines'), '"two\nlines"');
+      expect(csvField(null), '');
+      expect(csvField(1.5), '1.5');
+      expect(csvField(1.0), '1');
+      expect(csvField(true), 'true');
+    });
+
+    test('rows join with commas and survive round-trip parsing', () {
+      final row = csvRow(['a', 'b,c', 'd"e', 1.5, null]);
+      expect(row, 'a,"b,c","d""e",1.5,');
+    });
+
+    test(
+      'exports inventory, recipes and history with unrounded numbers',
+      () async {
+        SharedPreferences.setMockInitialValues({});
+        final s = AppState(autoLoad: false);
+        final ing = Ingredient(
+          id: 'a',
+          name: 'Strawberry (Ripe)',
+          brand: 'TFA',
+          kind: IngredientKind.flavor,
+          density: 1.036,
+          bottleSizeMl: 100,
+          bottleCost: 10,
+        );
+        s.ingredients.add(ing);
+        s.addAdjustment(
+          ingredientId: 'a',
+          deltaMl: 100,
+          reason: AdjustReason.opening,
+        );
+        s.recipes.add(
+          Recipe(
+            id: 'r1',
+            name: 'Test, "quoted"',
+            batchMl: 30,
+            targetNic: 3,
+            favorite: true,
+          )..setTags(['Fruit', 'All Day']),
+        );
+        s.logMix(
+          calculateMix(
+            amountMl: 30,
+            targetNic: 3,
+            targetVgPercent: 70,
+            settings: s.settings,
+            flavors: [(ing, 10)],
+          ),
+          label: 'Test mix',
+        );
+
+        final csv = exportCsv(appState: s);
+
+        // Three tables, each with its header.
+        expect(csv, contains('# MixLab inventory'));
+        expect(csv, contains('# MixLab recipes'));
+        expect(csv, contains('# MixLab mix history'));
+
+        // The recipe name is quoted and doubled, not mangled.
+        expect(csv, contains('"Test, ""quoted"""'));
+        // The recipe carries its organisation.
+        expect(csv, contains('yes'));
+        expect(csv, contains('fruit all day'));
+
+        // Every data row has the same field count as its block header —
+        // the failure mode that makes a CSV useless in a spreadsheet.
+        // (The three `#` block headers are deliberately one-field lines.)
+        final rows = csv
+            .split('\n')
+            .where((l) => l.isNotEmpty && !l.startsWith('#'))
+            .map(csvRowCount)
+            .toList();
+        expect(rows, everyElement(isIn([12, 10, 11])));
+      },
+    );
+
+    test('inventory section reflects live stock, not snapshots', () async {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      final ing = Ingredient(
+        id: 'a',
+        name: 'VG',
+        kind: IngredientKind.vg,
+        density: 1.261,
+      );
+      s.ingredients.add(ing);
+      s.addAdjustment(
+        ingredientId: 'a',
+        deltaMl: 250,
+        reason: AdjustReason.opening,
+      );
+
+      final csv = exportCsv(appState: s);
+      // 250 opening, no draws: the derived figure is the only 250
+      // present, and a zero-stock row would mean the ledger was not
+      // replayed.
+      expect(csv, contains('250'));
+      final stockLine = csv
+          .split('\n')
+          .firstWhere((l) => l.contains(',VG,'), orElse: () => '');
+      expect(stockLine, contains('250'));
+    });
+
+    test('a CSV-injection name survives as text, not a formula', () {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState(autoLoad: false);
+      s.recipes.add(Recipe(id: 'r', name: '=1+1'));
+
+      final csv = exportCsv(appState: s);
+      // Quoted, so the leading = stays text in every spreadsheet that
+      // respects quoting — the row is data, not an executed formula.
+      expect(csv, contains('"=1+1"'));
     });
   });
 }

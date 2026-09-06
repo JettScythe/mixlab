@@ -50,6 +50,9 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
   /// at mix time", which is how every recipe behaved before v12.
   String? _nicId, _pgId, _vgId;
 
+  /// Tag entry as raw text; parsed into the recipe's tag list on save.
+  late final TextEditingController _tags;
+
   AppState get s => widget.state;
   bool get _isNew => widget.existing == null;
 
@@ -73,6 +76,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
     _nicId = e?.nicId;
     _pgId = e?.pgId;
     _vgId = e?.vgId;
+    _tags = TextEditingController(text: e?.tags.join(', ') ?? '');
 
     if (e != null) {
       for (final f in e.flavors) {
@@ -87,7 +91,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
       }
     }
 
-    for (final c in [_name, _notes, _batch, _nic, _vg]) {
+    for (final c in [_name, _notes, _batch, _nic, _vg, _tags]) {
       c.addListener(_onChanged);
     }
     for (final r in _rows) {
@@ -98,7 +102,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
 
   @override
   void dispose() {
-    for (final c in [_name, _notes, _batch, _nic, _vg]) {
+    for (final c in [_name, _notes, _batch, _nic, _vg, _tags]) {
       c.dispose();
     }
     for (final r in _rows) {
@@ -135,6 +139,11 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
     nicId: _nicId,
     pgId: _pgId,
     vgId: _vgId,
+    // Not an editor field: the star lives on the card, and a save from
+    // here must not silently unpinned what was pinned elsewhere. Same for
+    // a missing base — see [_updateLoadedRecipe] in the calculator.
+    favorite: widget.existing?.favorite ?? false,
+    tags: _tags.text.split(','),
     flavors: [
       for (final r in _rows)
         if (s.byId(r.ingredientId) != null && _val(r.percent) > 0)
@@ -298,6 +307,16 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
               decoration: const InputDecoration(
                 labelText: 'Notes',
                 hintText: 'Steep time, origin, tweaks to try…',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _tags,
+              decoration: const InputDecoration(
+                labelText: 'Tags',
+                hintText: 'fruits, desserts, all-day…',
+                helperText: 'Comma-separated. Used for filtering.',
                 border: OutlineInputBorder(),
               ),
             ),

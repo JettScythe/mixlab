@@ -37,9 +37,20 @@ class Recipe {
     this.nicId,
     this.pgId,
     this.vgId,
+    this.favorite = false,
+    List<String>? tags,
     this.updatedAt,
     List<RecipeFlavor>? flavors,
-  }) : flavors = flavors ?? [];
+  }) : tags = [],
+       flavors = flavors ?? [] {
+    // Normalise at construction, not in a setter: every path that builds a
+    // recipe — editor, import, merge, restore — gets the same guarantees
+    // (trimmed, lowercased, deduplicated) without having to remember to
+    // call setTags. A tag saved with a leading space is a tag that will
+    // never match its own filter, and the whitespace compounds on every
+    // round trip through 'join(', ')' + split(',').
+    setTags(tags ?? const []);
+  }
 
   final String id;
   String name;
@@ -59,6 +70,32 @@ class Recipe {
   String? nicId;
   String? pgId;
   String? vgId;
+
+  /// Pinned to the top of the library. Presentation only — it never
+  /// affects a mix — but it syncs, because pinning on one device and not
+  /// finding it pinned on the other reads as the pin being lost.
+  bool favorite;
+
+  /// Free-form labels, lowercased and deduplicated on assignment through
+  /// [setTags]. Searched case-insensitively.
+  final List<String> tags;
+
+  /// Replaces the tag list with [tags], normalised: trimmed, lowercased,
+  /// empty entries dropped, duplicates collapsed, order preserved.
+  void setTags(Iterable<String> tags) {
+    this.tags
+      ..clear()
+      ..addAll({
+        for (final t in tags)
+          if (t.trim().isNotEmpty) t.trim().toLowerCase(),
+      });
+  }
+
+  /// True when [tag] is one of this recipe's tags. [tag] is expected
+  /// lowercase, as produced by [setTags]. Substring search lives in the
+  /// search box; a filter fed from the actual tag set means an exact hit,
+  /// or selecting 'fruit' also pulls in 'fruit punch'.
+  bool hasTag(String tag) => tags.contains(tag);
 
   /// Last modification, used for last-write-wins merging. Null means the
   /// record predates sync tracking.
@@ -91,6 +128,8 @@ class Recipe {
     'nicId': nicId,
     'pgId': pgId,
     'vgId': vgId,
+    'favorite': favorite,
+    'tags': tags.toList(),
     'flavors': flavors.map((f) => f.toJson()).toList(),
     'updatedAt': updatedAt?.toIso8601String(),
   };
@@ -114,6 +153,13 @@ class Recipe {
     nicId: j['nicId'] as String?,
     pgId: j['pgId'] as String?,
     vgId: j['vgId'] as String?,
+    // Absent on pre-v13 recipes. Present-but-wrong types degrade to the
+    // defaults like every other field.
+    favorite: j['favorite'] is bool ? j['favorite'] as bool : false,
+    tags: [
+      for (final t in (j['tags'] as List? ?? const []))
+        if (t is String) t,
+    ],
     flavors: [
       for (final f in (j['flavors'] as List? ?? const []))
         RecipeFlavor.fromJson(f as Map<String, dynamic>),

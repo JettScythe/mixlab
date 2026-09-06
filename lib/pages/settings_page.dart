@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:mixlab/models/enums.dart';
 import 'package:mixlab/models/settings.dart';
 import 'package:mixlab/models/units.dart';
+import 'package:mixlab/csv_export.dart';
 
 import '../state.dart';
 import '../theme.dart';
@@ -393,8 +394,8 @@ class _SettingsPageState extends State<SettingsPage> {
 
               _card(theme, 'Backup', [
                 const Text(
-                  'Exports ingredients, recipes, restocks, mix history and '
-                  'settings as one JSON file.\n\n'
+                  'Export saves everything as one JSON file for moving '
+                  'between devices.\n\n'
                   'Merge reviews another device\'s file and combines it with '
                   'this one, matching by id and then by brand and name. '
                   'Restore throws away everything here and puts the file in '
@@ -406,10 +407,15 @@ class _SettingsPageState extends State<SettingsPage> {
                   spacing: Gap.sm,
                   runSpacing: Gap.sm,
                   children: [
-                    FilledButton.tonalIcon(
+                    OutlinedButton.icon(
                       onPressed: _export,
                       icon: const Icon(Icons.download_outlined),
                       label: Text(_canSaveToFile ? 'Export to file' : 'Export'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: _exportCsv,
+                      icon: const Icon(Icons.table_chart_outlined),
+                      label: const Text('Export CSV'),
                     ),
                     OutlinedButton.icon(
                       onPressed: () async {
@@ -587,6 +593,62 @@ class _SettingsPageState extends State<SettingsPage> {
       showToast(context, 'Backup saved.');
     } catch (e, st) {
       debugPrint('Export failed: $e');
+      debugPrintStack(stackTrace: st);
+      await _showError('Export failed', e);
+    }
+  }
+
+  /// Spreadsheet export: three labelled tables (inventory, recipes, mix
+  /// history) in one file. Read-only reporting — the JSON backup remains
+  /// the only thing that round-trips.
+  Future<void> _exportCsv() async {
+    try {
+      await s.flush();
+      final csv = exportCsv(appState: s);
+      final stamp = DateTime.now().toIso8601String().split('T').first;
+      final suggested = 'mixlab-$stamp.csv';
+
+      if (!_canSaveToFile) {
+        await Clipboard.setData(ClipboardData(text: csv));
+        if (!mounted) return;
+        showToast(
+          context,
+          'Saving to a file is not supported here — CSV copied to the '
+          'clipboard instead.',
+        );
+        return;
+      }
+
+      final bytes = Uint8List.fromList(utf8.encode(csv));
+      final file = XFile.fromData(bytes, name: suggested, mimeType: 'text/csv');
+
+      if (kIsWeb) {
+        await file.saveTo(suggested);
+        if (!mounted) return;
+        showToast(context, 'CSV downloaded.');
+        return;
+      }
+
+      const group = XTypeGroup(label: 'CSV', extensions: ['csv']);
+      final loc = await getSaveLocation(
+        suggestedName: suggested,
+        acceptedTypeGroups: const [group],
+        confirmButtonText: 'Save CSV',
+      );
+      if (loc == null) {
+        if (!mounted) return;
+        showToast(context, 'Export cancelled.');
+        return;
+      }
+
+      final path = loc.path.toLowerCase().endsWith('.csv')
+          ? loc.path
+          : '${loc.path}.csv';
+      await file.saveTo(path);
+      if (!mounted) return;
+      showToast(context, 'CSV saved.');
+    } catch (e, st) {
+      debugPrint('CSV export failed: $e');
       debugPrintStack(stackTrace: st);
       await _showError('Export failed', e);
     }

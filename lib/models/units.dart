@@ -76,7 +76,26 @@ String money(double v, Settings s) {
   return f == null ? '${v.toStringAsFixed(2)} ${s.currency}' : f.format(v);
 }
 
-/// Three-decimal variant for per-mL figures, where rounding to cents hides
-/// the difference between ingredients.
+NumberFormat? _mlFormat;
+String? _mlCurrency;
+
+NumberFormat? _perMlFormat(String currency) {
+  if (_mlCurrency != currency) {
+    _mlCurrency = currency;
+    try {
+      _mlFormat = NumberFormat.decimalPatternDigits(decimalDigits: 3);
+    } catch (_) {
+      _mlFormat = null;
+    }
+  }
+  return _mlFormat;
+}
+
+/// Per-mL figures keep three decimals — rounding to cents hides the
+/// difference between ingredients — and carry the ISO code rather than the
+/// locale symbol, because `$0.123` reads like a typo next to `$1.03`. The
+/// symbol form stays on totals via [money]; this matches the per-mL style
+/// `stock_history_page` and the cost-basis figures have always used.
 String moneyPerMl(double v, Settings s) =>
-    '${v.toStringAsFixed(3)} ${s.currency}/mL';
+    '${_perMlFormat(s.currency)?.format(v) ?? v.toStringAsFixed(3)} '
+    '${s.currency}/mL';
