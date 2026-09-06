@@ -47,6 +47,26 @@ class ParsedRecipe {
 
   double get totalPercent => lines.fold(0.0, (a, l) => a + l.percent);
   bool get isEmpty => lines.isEmpty;
+
+  /// Builds a draft recipe from parsed values. Ingredient ids are left
+  /// empty — resolution against inventory is the caller's job, since this
+  /// class deliberately knows nothing about AppState.
+  ///
+  /// [notes] only survives when the source marked them as comments; a
+  /// bare prose line was never data and can carry percentages that would
+  /// otherwise import as a phantom ingredient.
+  Recipe toRecipe({String? id}) => Recipe(
+    id: id ?? '',
+    name: name ?? '',
+    batchMl: batchMl ?? 30,
+    targetNic: nic ?? 3,
+    targetVgPercent: vgPercent ?? 70,
+    baseMode: maxVg ? BaseMode.maxVg : BaseMode.ratio,
+    flavors: [
+      for (final l in lines)
+        RecipeFlavor(ingredientId: '', name: l.displayName, percent: l.percent),
+    ],
+  );
 }
 
 /// Vendor spellings that appear in shared recipes but are not the key we

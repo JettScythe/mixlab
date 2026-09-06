@@ -101,6 +101,11 @@ class Recipe {
   /// record predates sync tracking.
   DateTime? updatedAt;
 
+  /// Original paste-dialect text for a recipe parsed from the starter
+  /// library. Not persisted — a null here means the recipe came from
+  /// anywhere else.
+  String? sourceText;
+
   DateTime get syncStamp => updatedAt ?? beforeSync;
 
   /// How this recipe's percentages are meant to be read. Recipes written

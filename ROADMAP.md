@@ -60,9 +60,9 @@ packaging.
 - [ ] **iOS personal builds.** Free provisioning works but profiles
       expire after 7 days, so it means rebuilding weekly. Needs a real
       bundle identifier and a signing team.
-- [ ] **iOS export path.** `file_selector` has no save panel on iOS;
-      the code falls back to clipboard. `share_plus` is the idiomatic
-      fix.
+- [x] **iOS export path.** Shipped in v0.8 for Android and iOS both:
+      where `file_selector` has no save panel, exports go through the
+      `share_plus` share sheet instead of just the clipboard.
 - [x] **Backup transfer between devices.** Export on one, review and merge
       on the other. Records reconcile by id, then by brand and name;
       deletions propagate via tombstones. Still no server, and no
@@ -134,9 +134,10 @@ Not user-visible, but each one prevents a class of future bug.
       milestones. Desktop support for this is uneven.
 - [ ] **Nicotine expiry tracking.** It genuinely degrades; purchase
       dates are already recorded.
-- [ ] **First-run guidance.** The seeded flavors have zero stock and
-      zero cost, which makes cost figures read as `0.00` until the user
-      fills them in. That is confusing without explanation.
+- [x] **First-run guidance.** Shipped in v0.8 as a cold start: no seeded
+      recipes, ingredient bottles seeded at zero stock and zero cost, and
+      a bundled starter library that feeds the normal import review, which
+      auto-creates any missing ingredients at zero stock.
 
 ## Known issues
 
