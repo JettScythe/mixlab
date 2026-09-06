@@ -141,6 +141,34 @@ class _MergePreviewPageState extends State<MergePreviewPage> {
                             ],
                           ),
                         ],
+                        if (plan.refusedByName > 0) ...[
+                          Gap.vSm,
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(
+                                Icons.link_off,
+                                size: 16,
+                                color: theme.colorScheme.tertiary,
+                              ),
+                              const SizedBox(width: Gap.xs),
+                              Expanded(
+                                child: Text(
+                                  '${plan.refusedByName} ingredient(s) share a '
+                                  'name with yours but describe a different '
+                                  'bottle — a different kind, nicotine '
+                                  'strength or carrier. They are being added '
+                                  'separately rather than merged, so neither '
+                                  'copy is redefined. Rename whichever is '
+                                  'wrong if they are meant to be the same.',
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: theme.colorScheme.tertiary,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                       ],
                     ),
                   ),

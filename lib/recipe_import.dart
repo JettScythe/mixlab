@@ -90,6 +90,10 @@ final _bareNumRe = RegExp(r'^\d+(?:[.,]\d+)?$');
 final _trailingNumRe = RegExp(r'(?:^|\s)(\d+(?:[.,]\d+)?)\s*$');
 final _parenBrandRe = RegExp(r'[(\[]([^()\[\]]{1,24})[)\]]\s*$');
 final _bulletRe = RegExp(r'^[-•*·]+\s+');
+
+/// A line that is prose, not data. Requires the marker to be followed by
+/// whitespace so a real "#1 Strawberry" style line is still an ingredient.
+final _commentRe = RegExp(r'^(?:#|//)\s');
 final _columnSplitRe = RegExp(r'\t|\s{2,}|\s*\|\s*');
 final _maxVgRe = RegExp(r'max\s*-?\s*vg', caseSensitive: false);
 final _mgRe = RegExp(r'(\d+(?:[.,]\d+)?)\s*mg\b', caseSensitive: false);
@@ -316,6 +320,19 @@ ParsedRecipe parseRecipeText(String input) {
   for (final original in input.split(RegExp(r'[\r\n]+'))) {
     var line = original.replaceAll('\u00a0', ' ').trim();
     if (line.isEmpty) continue;
+
+    if (_commentRe.hasMatch(line)) {
+      // "# Mustard Milk" is a Markdown heading, and a heading in title
+      // position is a title — that spelling is ordinary in the Reddit and
+      // Discord pastes this parser exists to read. Everywhere else the
+      // marker means prose: [recipeToText] writes notes and the base note
+      // that way precisely so a line like "add 1% sucralose" cannot come
+      // back as a phantom concentrate.
+      if (sawIngredient || out.name != null) continue;
+      line = line.replaceFirst(_commentRe, '').trim();
+      if (line.isEmpty) continue;
+    }
+
     line = line.replaceFirst(_bulletRe, '').trim();
     if (line.isEmpty) continue;
 
@@ -369,7 +386,7 @@ ParsedRecipe parseRecipeText(String input) {
 /// but which base a recipe was built around is worth telling a human.
 String recipeToText(
   Recipe r, {
-  String Function(String ingredientId)? nameOf,
+  String? Function(String ingredientId)? nameOf,
   String? nicBaseName,
   String? pgName,
   String? vgName,
@@ -387,13 +404,19 @@ String recipeToText(
   out.writeln();
 
   // The metadata line the parser consumes whole.
+  //
+  // The ratio is emitted as whole numbers on purpose. The dialect has no
+  // way to say "62.5/37.5" — the parser's ratio pattern is integers-only,
+  // and a decimal there falls through to a looser rule that reads back
+  // something else entirely. Rounding loses at most half a point of a
+  // target the user can retype; emitting a decimal loses the whole figure
+  // silently. Subtracting after rounding also keeps the pair summing to
+  // 100 and keeps float noise like "33.400000000000006" out of text
+  // somebody is about to paste into a forum.
+  final vg = r.targetVgPercent.round().clamp(0, 100);
   final bits = <String>[
     '${_fmtNumber(r.batchMl)}ml',
-    if (r.baseMode == BaseMode.maxVg)
-      'Max VG'
-    else
-      '${_fmtNumber(r.targetVgPercent)}/'
-          '${_fmtNumber(100 - r.targetVgPercent)} VG/PG',
+    if (r.baseMode == BaseMode.maxVg) 'Max VG' else '$vg/${100 - vg} VG/PG',
     '${_fmtNumber(r.targetNic)}mg',
   ];
   out.writeln(bits.join(', '));
@@ -402,17 +425,25 @@ String recipeToText(
     out.writeln('Percentages are by weight.');
   }
 
+  // Everything below is prose for a human, and prose is where the parser
+  // gets into trouble: a note reading "add 1% sucralose if you like" is
+  // indistinguishable from an ingredient line, and re-importing would mix
+  // a phantom concentrate. Marking these lines as comments is the whole
+  // reason [_commentRe] exists — it costs one character a line and makes
+  // the round trip lossless in the direction that matters.
   final bases = <String>[
     if (nicBaseName != null) 'nicotine $nicBaseName',
     if (pgName != null) 'PG $pgName',
     if (vgName != null) 'VG $vgName',
   ];
-  if (bases.isNotEmpty) out.writeln('Mixed with: ${bases.join(', ')}.');
+  if (bases.isNotEmpty) out.writeln('# Mixed with: ${bases.join(', ')}.');
 
   final notes = r.notes.trim();
   if (notes.isNotEmpty) {
     out.writeln();
-    out.writeln(notes);
+    for (final line in notes.split(RegExp(r'[\r\n]+'))) {
+      out.writeln('# ${line.trim()}');
+    }
   }
 
   return out.toString().trimRight();

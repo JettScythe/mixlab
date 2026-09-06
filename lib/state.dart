@@ -1123,7 +1123,11 @@ class AppState extends ChangeNotifier {
 
     return recipeToText(
       r,
-      nameOf: (id) => byId(id)?.displayName ?? '',
+      // Null, not '', when the bottle is gone: an empty string is still
+      // non-null, so it would win the `??` in [recipeToText] and emit a
+      // nameless "8%" line that re-imports as nothing at all. The name
+      // stored on the flavor is carried for exactly this case.
+      nameOf: (id) => byId(id)?.displayName,
       nicBaseName: named(r.nicId, IngredientKind.nicotine),
       pgName: named(r.pgId, IngredientKind.pg),
       vgName: named(r.vgId, IngredientKind.vg),
@@ -1533,6 +1537,11 @@ class AppState extends ChangeNotifier {
       targetVgPercent: src.targetVgPercent,
       percentMode: src.percentMode,
       baseMode: src.baseMode,
+      // The bases are part of what the recipe *is*. A copy that dropped
+      // them would mix differently from its original for no stated reason.
+      nicId: src.nicId,
+      pgId: src.pgId,
+      vgId: src.vgId,
       flavors: [
         for (final f in src.flavors)
           RecipeFlavor(

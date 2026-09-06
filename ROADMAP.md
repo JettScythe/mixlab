@@ -150,6 +150,15 @@ Not user-visible, but each one prevents a class of future bug.
 - Merging matches ingredients by id, then by brand and name. Two installs
   that spell the same bottle differently — "TFA Strawberry Ripe" against
   "TPA Strawberry (Ripe)" — still merge as two ingredients.
+- A name match is only accepted when the two records agree on kind,
+  nicotine strength and carrier, because merging hands the incoming record
+  to last-write-wins and a mismatch would silently redefine what is in the
+  bottle. So one install annotating a concentrate's carrier while the
+  other leaves it at zero keeps them as two entries. The merge preview
+  says so and names the reason.
+- Recipe text export writes the VG/PG ratio as whole numbers. The pasted
+  dialect has no way to express a fractional ratio, so a 62.5% target
+  shares as 63/37.
 
 ## Not planned
 

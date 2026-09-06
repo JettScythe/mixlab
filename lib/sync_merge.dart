@@ -87,6 +87,7 @@ class MergePlan {
     this.remoteDevice = '',
     this.exportedAt,
     this.matchedByName = 0,
+    this.refusedByName = 0,
   });
 
   final List<MergeItem> items;
@@ -95,6 +96,14 @@ class MergePlan {
   /// an existing local one by brand and name. Surfaced so the review can
   /// say why an expected "add" is missing.
   final int matchedByName;
+
+  /// Ingredients that share a local record's brand and name but describe a
+  /// different bottle — a different kind, nicotine strength or carrier —
+  /// so they were left as separate records. Surfaced for the opposite
+  /// reason to [matchedByName]: without it, a refusal is indistinguishable
+  /// from an ordinary add and the user is left with a duplicate-looking
+  /// entry and no explanation.
+  final int refusedByName;
 
   /// Tombstones from the other side, folded in regardless of item choices
   /// so a delete cannot be half-applied.
@@ -122,7 +131,16 @@ String _fmtPct(double v) =>
     v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
 
 /// Short description of how two recipes differ, for the preview.
-String _recipeDiff(Recipe local, Recipe remote) {
+///
+/// [baseLabel] renders a base pin as something a person can judge. It is
+/// resolved against the local inventory, which works because the incoming
+/// pins have already been rewritten through the alias map by the time a
+/// diff is taken.
+String _recipeDiff(
+  Recipe local,
+  Recipe remote, {
+  required String Function(String? id) baseLabel,
+}) {
   final bits = <String>[];
   if (local.name != remote.name) bits.add('renamed to "${remote.name}"');
   if (local.notes != remote.notes) bits.add('notes changed');
@@ -149,11 +167,34 @@ String _recipeDiff(Recipe local, Recipe remote) {
   if ((local.targetNic - remote.targetNic).abs() > 1e-9) {
     bits.add('nic ${_fmtPct(remote.targetNic)} mg');
   }
+  // Only meaningful outside max VG, where the target is not consulted.
+  if (remote.baseMode != BaseMode.maxVg &&
+      (local.targetVgPercent - remote.targetVgPercent).abs() > 1e-9) {
+    bits.add(
+      '${_fmtPct(remote.targetVgPercent)}/'
+      '${_fmtPct(100 - remote.targetVgPercent)} VG/PG',
+    );
+  }
   if (local.percentMode != remote.percentMode) {
     bits.add(percentModeLabel(remote.percentMode).toLowerCase());
   }
   if (local.baseMode != remote.baseMode) {
     bits.add(baseModeLabel(remote.baseMode).toLowerCase());
+  }
+  // A pin change is invisible in every field above, and 'no visible
+  // difference' is the sentinel that drops an item from the plan — so
+  // without this a recipe repinned to a 250 mg/mL base would never
+  // propagate, and the pin would look like it simply did not sync.
+  //
+  // The incoming bottle is named rather than counted: this is the one
+  // recipe field that changes the dose, so "nicotine base" alone gives the
+  // user nothing to accept or decline on.
+  for (final (label, a, b) in [
+    ('nicotine', local.nicId, remote.nicId),
+    ('PG', local.pgId, remote.pgId),
+    ('VG', local.vgId, remote.vgId),
+  ]) {
+    if (a != b) bits.add('$label base → ${baseLabel(b)}');
   }
   return bits.isEmpty ? 'no visible difference' : bits.join(' • ');
 }
@@ -172,9 +213,21 @@ String _ingredientDiff(Ingredient local, Ingredient remote) {
   }
   if (local.kind != remote.kind) bits.add('now ${kindLabel(remote.kind)}');
   if (local.notes != remote.notes) bits.add('notes changed');
-  if (local.nicStrength != remote.nicStrength ||
+  if ((local.nicMgPerMl - remote.nicMgPerMl).abs() > 1e-9) {
+    bits.add('${_fmtPct(remote.nicMgPerMl)} mg/mL');
+  } else if (local.nicStrength != remote.nicStrength ||
       local.nicUnit != remote.nicUnit) {
-    bits.add('strength changed');
+    // Same dose, different bookkeeping — worth saying, not worth a number.
+    bits.add('strength recorded differently');
+  }
+  // Carrier and salt are now identity-critical for the name-based dedup,
+  // so an edit to either must be visible: 'no visible difference' drops
+  // the item, and the change would never sync at all.
+  if ((local.carrierVg - remote.carrierVg).abs() > 1e-9) {
+    bits.add('carrier ${_fmtPct(remote.carrierVg * 100)}% VG');
+  }
+  if (local.nicIsSalt != remote.nicIsSalt) {
+    bits.add(remote.nicIsSalt ? 'now salt' : 'no longer salt');
   }
   return bits.isEmpty ? 'no visible difference' : bits.join(' • ');
 }
@@ -238,6 +291,36 @@ List<Map<String, dynamic>> _openingBalancesFor({
   return out;
 }
 
+/// True when [remote] is plausibly the same physical bottle as [local],
+/// beyond merely sharing a label.
+///
+/// Brand and name have already matched by the time this is called. What is
+/// checked here is everything that would change how the bottle is *mixed*:
+/// aliasing hands the remote record to last-write-wins against the local
+/// one, so a disagreement is not a duplicate to be fused — it is two
+/// different products that happen to be typed the same way, and merging
+/// them would silently redefine what the local bottle contains.
+///
+/// Both sides are compared as parsed [Ingredient]s on purpose. Reading the
+/// raw JSON here instead would let this gate and the apply that follows it
+/// disagree about what the payload says — [Ingredient.fromJson] defaults a
+/// missing unit to mg/mL and repairs a non-positive density, and a gate
+/// with its own defaults would fuse records the apply then reads
+/// differently, which is the failure it exists to prevent.
+bool _sameBottle(Ingredient local, Ingredient remote) {
+  if (remote.kind != local.kind) return false;
+
+  // Nicotine strength is the one number where being wrong is a dosing
+  // error rather than an inconvenience, so it is compared in the unit the
+  // mixing math actually uses.
+  if ((remote.nicMgPerMl - local.nicMgPerMl).abs() > 1e-6) return false;
+
+  // Carrier drives density, and density drives every weight on screen.
+  if ((remote.carrierVg - local.carrierVg).abs() > 1e-6) return false;
+
+  return true;
+}
+
 /// Rewrites every reference to a remote ingredient id that resolves to a
 /// different local id for the same bottle.
 ///
@@ -267,6 +350,15 @@ void _applyIngredientAliases(
       final m = f as Map<String, dynamic>;
       final to = aliases[m['ingredientId']];
       if (to != null) m['ingredientId'] = to;
+    }
+    // Since v12 a recipe also names the bases it is mixed from. Leaving
+    // these pointing at the remote id would land the recipe pinned to a
+    // bottle this device has never stored, and [AppState.baseFor] would
+    // quietly fall back to the first of each kind — the exact silent
+    // substitution the pins exist to prevent.
+    for (final k in const ['nicId', 'pgId', 'vgId']) {
+      final to = aliases[r[k]];
+      if (to != null) r[k] = to;
     }
   }
   for (final l in mixLog) {
@@ -375,7 +467,21 @@ MergePlan buildMergePlan({
   }
 
   final aliases = <String, String>{};
-  final claimed = <String>{};
+
+  // A local record the remote payload already carries *by id* is spoken
+  // for: aliasing a second remote record onto it would put two entries
+  // with the same id in the plan, and the apply would then resolve them in
+  // list order rather than by timestamp. Claim those up front.
+  final claimed = <String>{
+    for (final j in rawIngredients)
+      if (j['id'] case final String id when localById.containsKey(id)) id,
+  };
+
+  // Labels that matched a local record but described a different bottle.
+  // Counted so the preview can say why a duplicate-looking entry is still
+  // arriving as an add, rather than leaving the user to guess.
+  var refusedByName = 0;
+
   for (final j in rawIngredients) {
     final id = j['id'] as String?;
     if (id == null || localById.containsKey(id)) continue;
@@ -387,7 +493,17 @@ MergePlan buildMergePlan({
     final match = localByName[key];
     // One local record can absorb only one remote id, or two remote
     // duplicates would both alias onto it and collide.
-    if (match == null || !claimed.add(match.id)) continue;
+    if (match == null || claimed.contains(match.id)) continue;
+    // A shared label is not a shared bottle. Aliasing feeds the remote
+    // record into last-write-wins against the local one, so a mismatch
+    // here would let a newer edit redefine what is physically in the
+    // bottle — a 100 mg/mL base overwriting a 250 mg/mL one is a 2.5x
+    // dosing error with nothing on screen to say so.
+    if (!_sameBottle(match, Ingredient.fromJson(j))) {
+      refusedByName++;
+      continue;
+    }
+    claimed.add(match.id);
     aliases[id] = match.id;
   }
 
@@ -488,7 +604,18 @@ MergePlan buildMergePlan({
     parse: Recipe.fromJson,
     labelOf: (e) => e.name,
     stampOf: (e) => e.syncStamp,
-    diff: _recipeDiff,
+    diff: (a, b) => _recipeDiff(
+      a,
+      b,
+      baseLabel: (id) {
+        if (id == null) return 'none';
+        final e = localById[id];
+        if (e == null) return 'a bottle you do not have';
+        return e.kind == IngredientKind.nicotine && e.nicMgPerMl > 0
+            ? '${e.displayName} (${_fmtPct(e.nicMgPerMl)} mg/mL)'
+            : e.displayName;
+      },
+    ),
   );
 
   consider<MixLog>(
@@ -615,5 +742,6 @@ MergePlan buildMergePlan({
     remoteDevice: decoded['deviceId'] as String? ?? 'unknown device',
     exportedAt: DateTime.tryParse(decoded['exportedAt'] as String? ?? ''),
     matchedByName: aliases.length,
+    refusedByName: refusedByName,
   );
 }
