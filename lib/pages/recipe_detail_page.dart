@@ -307,8 +307,9 @@ class RecipeDetailPage extends StatelessWidget {
               const Divider(height: 20),
               Text(
                 'Volumes shown at the recipe default of '
-                '${r.batchMl.toStringAsFixed(0)} mL, in ${set.currency} '
-                'terms from your current stock.',
+                '${r.batchMl.toStringAsFixed(0)} mL, in '
+                '${money(0, set).replaceAll(RegExp(r'[\d.,\s]'), '')} terms '
+                'from your current stock.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.outline,
                 ),

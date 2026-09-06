@@ -64,7 +64,7 @@ class AppState extends ChangeNotifier {
   /// restored file cannot give two installs the same identity.
   static const _kDeviceId = 'device_id';
 
-  static const currentSchema = 12;
+  static const currentSchema = 13;
 
   static const _allKeys = [
     _kSchema,
@@ -440,6 +440,12 @@ class AppState extends ChangeNotifier {
       // before, so no transform is needed. The bump stops an older build
       // dropping the new ids on its next write.
       v = 12;
+    }
+    if (v < 13) {
+      // v13 adds favorite and tags to recipes. Both are absent on pre-v13
+      // payloads and read as unpinned/untagged, so no transform is needed.
+      // The bump stops an older build dropping them on its next write.
+      v = 13;
     }
     await prefs.setInt(_kSchema, v);
   }
@@ -1542,6 +1548,9 @@ class AppState extends ChangeNotifier {
       nicId: src.nicId,
       pgId: src.pgId,
       vgId: src.vgId,
+      // So is the organisation. A copy is still the same kind of recipe.
+      favorite: src.favorite,
+      tags: List.of(src.tags),
       flavors: [
         for (final f in src.flavors)
           RecipeFlavor(

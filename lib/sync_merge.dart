@@ -196,8 +196,23 @@ String _recipeDiff(
   ]) {
     if (a != b) bits.add('$label base → ${baseLabel(b)}');
   }
+  if (local.favorite != remote.favorite) {
+    bits.add(remote.favorite ? 'pinned' : 'unpinned');
+  }
+  if (!_tagsEqual(local.tags, remote.tags)) {
+    bits.add(
+      remote.tags.isEmpty ? 'tags cleared' : 'tags → ${remote.tags.join(', ')}',
+    );
+  }
   return bits.isEmpty ? 'no visible difference' : bits.join(' • ');
 }
+
+/// Order- and duplicate-insensitive tag comparison: ['fruit', 'sweet'] and
+/// ['sweet', 'fruit'] are the same labelling, and a list comparison would
+/// also call [fruit, fruit] different from [fruit, sweet] only in one
+/// direction. Comparing as sets makes the check symmetric.
+bool _tagsEqual(List<String> a, List<String> b) =>
+    a.toSet().length == b.toSet().length && a.toSet().containsAll(b);
 
 String _ingredientDiff(Ingredient local, Ingredient remote) {
   final bits = <String>[];
