@@ -43,6 +43,13 @@ class _CalculatorPageState extends State<CalculatorPage> {
   String? _pgId;
   String? _vgId;
 
+  /// Base kinds the user has picked by hand since the current recipe was
+  /// loaded. A pin the recipe named but the inventory no longer has cannot
+  /// be told apart from an untouched selector by value alone — both leave
+  /// the selector holding something the recipe never chose — so an
+  /// explicit re-pick has to be recorded rather than inferred.
+  final Set<IngredientKind> _repicked = {};
+
   final List<_ConcentrateEntry> _rows = [];
 
   String _label = '';
@@ -117,6 +124,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
     // A recipe that names its bases is mixed from those, not from whatever
     // happens to be selected. One that names none leaves the current
     // selection alone, which is how recipes behaved before v12.
+    _repicked.clear();
     var missingBase = false;
     for (final (wanted, kind, apply)
         in <(String?, IngredientKind, void Function(String?))>[
@@ -155,17 +163,18 @@ class _CalculatorPageState extends State<CalculatorPage> {
     }
 
     setState(() {});
-    if (skipped > 0) {
-      showToast(
-        context,
-        '$skipped ingredient(s) skipped — not found in inventory.',
-      );
-    } else if (missingBase) {
-      showToast(
-        context,
-        'A base this recipe was written for is no longer in your '
-        'inventory — using your current selection instead.',
-      );
+    // Both warnings matter, and a recipe can hit both at once — a missing
+    // base is the more consequential of the two, so it must not be
+    // swallowed just because an ingredient was also missing.
+    final problems = <String>[
+      if (skipped > 0) '$skipped ingredient(s) skipped — not in inventory',
+      if (missingBase)
+        'a base this recipe was written for is gone — using your current '
+            'selection instead',
+    ];
+    if (problems.isNotEmpty) {
+      final msg = problems.join('; ');
+      showToast(context, '${msg[0].toUpperCase()}${msg.substring(1)}.');
     }
   }
 
@@ -294,7 +303,10 @@ class _CalculatorPageState extends State<CalculatorPage> {
               state: s,
               createKind: IngredientKind.nicotine,
               emptyHint: 'No nicotine bases yet — search a name and create it',
-              onSelected: (id) => setState(() => _nicId = id),
+              onSelected: (id) => setState(() {
+                _nicId = id;
+                _repicked.add(IngredientKind.nicotine);
+              }),
             ),
             const SizedBox(height: 8),
             Row(
@@ -308,7 +320,10 @@ class _CalculatorPageState extends State<CalculatorPage> {
                     state: s,
                     createKind: IngredientKind.pg,
                     emptyHint: 'No PG in inventory',
-                    onSelected: (id) => setState(() => _pgId = id),
+                    onSelected: (id) => setState(() {
+                      _pgId = id;
+                      _repicked.add(IngredientKind.pg);
+                    }),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -321,7 +336,10 @@ class _CalculatorPageState extends State<CalculatorPage> {
                     state: s,
                     createKind: IngredientKind.vg,
                     emptyHint: 'No VG in inventory',
-                    onSelected: (id) => setState(() => _vgId = id),
+                    onSelected: (id) => setState(() {
+                      _vgId = id;
+                      _repicked.add(IngredientKind.vg);
+                    }),
                   ),
                 ),
               ],
@@ -876,6 +894,27 @@ class _CalculatorPageState extends State<CalculatorPage> {
   }
 
   void _updateLoadedRecipe(Recipe loaded) {
+    // A recipe that pins its bases follows what is selected now; one that
+    // does not stays unpinned. Updating from the calculator should not
+    // quietly start pinning bases the user never chose to pin — the recipe
+    // editor is where that decision is made.
+    //
+    // A pin that no longer resolves is kept as it was. [_applyRecipe]
+    // could not load it into the selector, so the selector holds some
+    // unrelated bottle; writing that back would silently repoint the
+    // recipe at a base the user never picked, and the deleted bottle may
+    // yet arrive from another device.
+    //
+    // Unless they did pick one. Someone who read the warning and chose a
+    // replacement means it, and dropping that would be the same silent
+    // loss in the other direction.
+    String? pin(String? was, String? selected, IngredientKind kind) {
+      if (was == null) return null;
+      if (_repicked.contains(kind)) return selected;
+      final found = s.byId(was);
+      return (found != null && found.kind == kind) ? selected : was;
+    }
+
     s.updateRecipe(
       Recipe(
         id: loaded.id,
@@ -886,13 +925,9 @@ class _CalculatorPageState extends State<CalculatorPage> {
         targetVgPercent: _val(_vg),
         percentMode: _percentMode,
         baseMode: _baseMode,
-        // A recipe that pins its bases follows what is selected now; one
-        // that does not stays unpinned. Updating from the calculator
-        // should not quietly start pinning bases the user never chose to
-        // pin — the recipe editor is where that decision is made.
-        nicId: loaded.nicId == null ? null : _nicId,
-        pgId: loaded.pgId == null ? null : _pgId,
-        vgId: loaded.vgId == null ? null : _vgId,
+        nicId: pin(loaded.nicId, _nicId, IngredientKind.nicotine),
+        pgId: pin(loaded.pgId, _pgId, IngredientKind.pg),
+        vgId: pin(loaded.vgId, _vgId, IngredientKind.vg),
         flavors: _currentFlavors(),
       ),
     );

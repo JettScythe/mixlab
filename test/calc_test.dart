@@ -2289,6 +2289,21 @@ void main() {
       final prefs = await SharedPreferences.getInstance();
       expect(prefs.getInt('schema_version'), 12);
     });
+
+    test('duplicating a recipe keeps its bases', () {
+      // A copy that dropped the pins would mix differently from the
+      // original with nothing on screen to explain why.
+      final s = withBases();
+      s.recipes.add(
+        Recipe(id: 'r', name: 'R', nicId: 'nic-vg', pgId: 'pg', vgId: 'vg'),
+      );
+
+      final copy = s.duplicateRecipe('r')!;
+      expect(copy.nicId, 'nic-vg');
+      expect(copy.pgId, 'pg');
+      expect(copy.vgId, 'vg');
+      expect(s.baseFor(copy, IngredientKind.nicotine)!.nicMgPerMl, 250);
+    });
   });
 
   group('recipe as shareable text', () {
@@ -2427,6 +2442,102 @@ void main() {
       s.byId('sb')!.name = 'Strawberry Ripe (renamed)';
       // The recipe still carries the old label; inventory wins.
       expect(s.recipeAsText(sample()), contains('renamed'));
+    });
+
+    test('a deleted ingredient falls back to the stored name', () {
+      // Otherwise the line renders as a bare "8%" and re-imports as
+      // nothing — the flavor's own name is carried for this case.
+      final s = stocked();
+      s.ingredients.removeWhere((e) => e.id == 'sb');
+
+      final text = s.recipeAsText(sample());
+      expect(text, contains('8% TFA Strawberry (Ripe)'));
+      expect(parseRecipeText(text).lines.length, 2);
+    });
+
+    test('a fractional ratio survives as whole numbers summing to 100', () {
+      // The dialect's ratio pattern is integers-only. A decimal there was
+      // read back as something else entirely — 62.5 came home as 5.
+      for (final (target, expected) in [
+        (62.5, 63.0),
+        (66.6, 67.0),
+        (50.5, 51.0),
+      ]) {
+        final s = stocked();
+        final text = s.recipeAsText(sample()..targetVgPercent = target);
+        expect(
+          text,
+          isNot(contains('0000')),
+          reason: 'float noise must not reach text a user pastes',
+        );
+        expect(parseRecipeText(text).vgPercent, closeTo(expected, 1e-9));
+      }
+    });
+
+    test('notes are not read back as an ingredient', () {
+      // "add 1% sucralose if you like" is indistinguishable from a real
+      // line, so a re-import used to mint a phantom concentrate.
+      final s = stocked();
+      final r = sample()
+        ..notes = 'Steep 2 weeks.\nAdd 1% sucralose if you like.';
+
+      final parsed = parseRecipeText(s.recipeAsText(r));
+      expect(parsed.lines.length, 2);
+      expect(
+        parsed.lines.map((l) => l.name),
+        isNot(contains(contains('sucralose'))),
+      );
+      expect(parsed.ignored, isEmpty);
+    });
+
+    test('the base note does not surface as unparsed noise', () {
+      final s = stocked();
+      s.ingredients.add(
+        Ingredient(
+          id: 'nic-vg',
+          name: 'Nic 250 (VG)',
+          kind: IngredientKind.nicotine,
+          density: 1.261,
+          nicStrength: 250,
+        ),
+      );
+      final text = s.recipeAsText(sample()..nicId = 'nic-vg');
+      expect(text, contains('Nic 250 (VG)'));
+      expect(parseRecipeText(text).ignored, isEmpty);
+    });
+
+    test('a comment marker still needs whitespace to count', () {
+      // "#1 Strawberry 8%" is an ingredient, not a comment.
+      final p = parseRecipeText('#1 Strawberry (Ripe) 8%');
+      expect(p.lines.single.percent, closeTo(8, 1e-9));
+    });
+
+    test('a markdown heading is still read as the title', () {
+      // "# Name" is how Reddit, Discord and GitHub pastes spell a title,
+      // and dropping it as a comment would lose the recipe's name with
+      // nothing reported.
+      final p = parseRecipeText('''
+# Mustard Milk
+
+8% TFA Strawberry (Ripe)
+6% TFA Vanilla Bean Ice Cream
+''');
+      expect(p.name, 'Mustard Milk');
+      expect(p.lines.length, 2);
+    });
+
+    test('a comment after the title is still prose', () {
+      // Only title position is special. A marked line anywhere else is
+      // what recipeToText emits for notes, and must not become data.
+      final p = parseRecipeText('''
+# Mustard Milk
+# Add 1% sucralose if you like.
+
+8% TFA Strawberry (Ripe)
+''');
+      expect(p.name, 'Mustard Milk');
+      expect(p.lines.length, 1);
+      expect(p.ignored, isEmpty);
     });
   });
 
@@ -3188,6 +3299,155 @@ some line with no numbers at all
       expect(a.byId('z')!.brand, 'CAP');
       expect(a.byId('z')!.name, 'Sweet Cream');
     });
+
+    test('a repinned base is a visible difference, so it syncs', () async {
+      // 'no visible difference' is the sentinel that drops an item from
+      // the plan. A pin change touches no other field, so without it the
+      // edit would look like it simply never synced.
+      final (a, b) = twoDevices();
+      for (final s in [a, b]) {
+        s.ingredients.addAll([
+          Ingredient(
+            id: 'nic-pg',
+            name: 'Nic 100 (PG)',
+            kind: IngredientKind.nicotine,
+            density: 1.036,
+            nicStrength: 100,
+          ),
+          Ingredient(
+            id: 'nic-vg',
+            name: 'Nic 250 (VG)',
+            kind: IngredientKind.nicotine,
+            density: 1.261,
+            nicStrength: 250,
+            carrierVg: 1,
+          ),
+        ]);
+      }
+      a.recipes.add(
+        Recipe(id: 'r1', name: 'R', batchMl: 30, targetNic: 3)
+          ..updatedAt = DateTime(2026, 1, 1),
+      );
+      b.recipes.add(
+        Recipe(id: 'r1', name: 'R', batchMl: 30, targetNic: 3, nicId: 'nic-vg')
+          ..updatedAt = DateTime(2026, 6, 1),
+      );
+
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.countOf(MergeAction.update), 1);
+      // Named with its strength: this is the one recipe field that changes
+      // the dose, so "nicotine base" alone gives nothing to judge.
+      expect(plan.items.single.detail, contains('nicotine base'));
+      expect(plan.items.single.detail, contains('Nic 250 (VG)'));
+      expect(plan.items.single.detail, contains('250 mg/mL'));
+
+      await a.applyMerge(plan);
+      expect(a.recipeById('r1')!.nicId, 'nic-vg');
+      expect(
+        a.baseFor(a.recipeById('r1')!, IngredientKind.nicotine)!.nicMgPerMl,
+        closeTo(250, 1e-9),
+      );
+    });
+
+    test('a changed VG target is a visible difference too', () async {
+      final (a, b) = twoDevices();
+      a.recipes.add(
+        Recipe(id: 'r1', name: 'R', targetVgPercent: 70)
+          ..updatedAt = DateTime(2026, 1, 1),
+      );
+      b.recipes.add(
+        Recipe(id: 'r1', name: 'R', targetVgPercent: 80)
+          ..updatedAt = DateTime(2026, 6, 1),
+      );
+
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.countOf(MergeAction.update), 1);
+      expect(plan.items.single.detail, contains('80/20 VG/PG'));
+
+      await a.applyMerge(plan);
+      expect(a.recipeById('r1')!.targetVgPercent, closeTo(80, 1e-9));
+    });
+
+    test('under max VG the ratio target is not reported as a change', () {
+      // Max VG does not consult the target, so surfacing it would offer
+      // the user a decision with no effect on anything they will mix.
+      final (a, b) = twoDevices();
+      a.recipes.add(
+        Recipe(id: 'r1', name: 'R', targetVgPercent: 70)
+          ..baseMode = BaseMode.maxVg
+          ..updatedAt = DateTime(2026, 1, 1),
+      );
+      b.recipes.add(
+        Recipe(id: 'r1', name: 'R', targetVgPercent: 80)
+          ..baseMode = BaseMode.maxVg
+          ..updatedAt = DateTime(2026, 6, 1),
+      );
+
+      expect(a.previewMerge(b.exportJson()).items, isEmpty);
+    });
+
+    test('a carrier-only edit still syncs', () {
+      // Carrier is identity-critical for the name-based dedup now, so an
+      // edit to it that reads as 'no visible difference' would be dropped
+      // from the plan and never propagate at all.
+      final (a, b) = twoDevices();
+      for (final s in [a, b]) {
+        s.ingredients.add(
+          Ingredient(
+            id: 'nic',
+            name: 'Nic base',
+            kind: IngredientKind.nicotine,
+            density: 1.036,
+            nicStrength: 100,
+            updatedAt: DateTime(2026, 1, 1),
+          ),
+        );
+      }
+      b.byId('nic')!
+        ..carrierVg = 1
+        ..density = 1.261
+        ..updatedAt = DateTime(2026, 6, 1);
+
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.countOf(MergeAction.update), 1);
+      expect(plan.items.single.detail, contains('100% VG'));
+    });
+
+    test(
+      'the pin rewrite converges when both devices merge each other',
+      () async {
+        // A rewrites B's pin to A's local id. If that id then travelled back
+        // out to B, where it means nothing, the two would trade edits
+        // forever. It must reach a fixpoint instead.
+        final (a, b) = twoDevices();
+        for (final (s, id) in [(a, 'local-nic'), (b, 'remote-nic')]) {
+          s.ingredients.add(
+            Ingredient(
+              id: id,
+              name: 'Nic base',
+              kind: IngredientKind.nicotine,
+              density: 1.036,
+              nicStrength: 100,
+              updatedAt: DateTime(2026, 1, 1),
+            ),
+          );
+        }
+        b.recipes.add(
+          Recipe(id: 'r1', name: 'R', nicId: 'remote-nic')
+            ..updatedAt = DateTime(2026, 2, 1),
+        );
+
+        await a.applyMerge(a.previewMerge(b.exportJson()));
+        await b.applyMerge(b.previewMerge(a.exportJson()));
+
+        // Each device keeps its own id for the bottle, and neither has
+        // anything left to tell the other.
+        expect(a.recipeById('r1')!.nicId, 'local-nic');
+        expect(b.recipeById('r1')!.nicId, 'remote-nic');
+        expect(a.previewMerge(b.exportJson()).items, isEmpty);
+        expect(b.previewMerge(a.exportJson()).items, isEmpty);
+      },
+    );
   });
 
   group('merge deduplicates ingredients by name', () {
@@ -3405,6 +3665,213 @@ some line with no numbers at all
       typed(a, 'local-1', '', '');
       typed(b, 'remote-9', '', '');
       expect(a.previewMerge(b.exportJson()).matchedByName, 0);
+    });
+
+    /// A nicotine base, so a wrong match is a dosing error rather than a
+    /// cosmetic one.
+    Ingredient nicBase(
+      AppState s,
+      String id,
+      String name,
+      double mgPerMl, {
+      double carrierVg = 0,
+      DateTime? at,
+    }) {
+      final e = Ingredient(
+        id: id,
+        name: name,
+        kind: IngredientKind.nicotine,
+        density: carrierVg > 0 ? 1.261 : 1.036,
+        nicStrength: mgPerMl,
+        carrierVg: carrierVg,
+        updatedAt: at ?? DateTime(2026, 1, 1),
+      );
+      s.ingredients.add(e);
+      return e;
+    }
+
+    test('a base of a different strength is not fused into ours', () async {
+      // Same label, different bottle. Aliasing would hand the remote
+      // record to last-write-wins and redefine 250 mg/mL as 100 — every
+      // mix after that is 2.5x the nicotine the user asked for.
+      final (a, b) = twoDevices();
+      nicBase(a, 'local-strong', 'Nic base', 250);
+      nicBase(b, 'remote-weak', 'Nic base', 100, at: DateTime(2026, 6, 1));
+
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.matchedByName, 0);
+
+      await a.applyMerge(plan);
+      expect(a.byId('local-strong')!.nicMgPerMl, closeTo(250, 1e-9));
+      expect(a.byId('remote-weak'), isNotNull);
+    });
+
+    test('a base in a different carrier is not fused into ours', () async {
+      // Carrier drives density, and density drives every weight shown.
+      final (a, b) = twoDevices();
+      nicBase(a, 'local-vg', 'Nic base', 100, carrierVg: 1);
+      nicBase(b, 'remote-pg', 'Nic base', 100, at: DateTime(2026, 6, 1));
+
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.matchedByName, 0);
+
+      await a.applyMerge(plan);
+      expect(a.byId('local-vg')!.carrierVg, closeTo(1, 1e-9));
+      expect(a.byId('local-vg')!.density, closeTo(1.261, 1e-9));
+    });
+
+    test('a flavor never absorbs a base of the same name', () async {
+      final (a, b) = twoDevices();
+      nicBase(a, 'local-nic', 'Nic base', 100);
+      typed(b, 'remote-flavor', '', 'Nic base').updatedAt = DateTime(
+        2026,
+        6,
+        1,
+      );
+
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.matchedByName, 0);
+
+      await a.applyMerge(plan);
+      final mine = a.byId('local-nic')!;
+      expect(mine.kind, IngredientKind.nicotine);
+      expect(mine.nicMgPerMl, closeTo(100, 1e-9));
+    });
+
+    test('two zero-strength bases of different kinds do not fuse', () async {
+      // Neither the strength nor the carrier check catches this pair, so
+      // it is the kind gate or nothing: PG and VG under one label would
+      // otherwise fuse and every ratio built on them would be wrong.
+      final (a, b) = twoDevices();
+      a.ingredients.add(
+        Ingredient(
+          id: 'local-pg',
+          name: 'Base',
+          kind: IngredientKind.pg,
+          density: 1.036,
+          updatedAt: DateTime(2026, 1, 1),
+        ),
+      );
+      b.ingredients.add(
+        Ingredient(
+          id: 'remote-vg',
+          name: 'Base',
+          kind: IngredientKind.vg,
+          density: 1.261,
+          updatedAt: DateTime(2026, 6, 1),
+        ),
+      );
+
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.matchedByName, 0);
+      expect(plan.refusedByName, 1);
+
+      await a.applyMerge(plan);
+      expect(a.byId('local-pg')!.kind, IngredientKind.pg);
+      expect(a.byId('remote-vg')!.kind, IngredientKind.vg);
+    });
+
+    test('a refusal is surfaced, not silently turned into an add', () {
+      // matchedByName counts successes only, so without its counterpart a
+      // refused alias is indistinguishable from an ordinary new bottle and
+      // the user gets a duplicate-looking row with no explanation.
+      final (a, b) = twoDevices();
+      nicBase(a, 'local-strong', 'Nic base', 250);
+      nicBase(b, 'remote-weak', 'Nic base', 100, at: DateTime(2026, 6, 1));
+
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.refusedByName, 1);
+      expect(plan.matchedByName, 0);
+    });
+
+    test('a base whose unit is recorded as mg/g still dedupes', () async {
+      // The gate must read the payload exactly as the apply does. Deriving
+      // its own defaults let a mg/g record be measured one way here and
+      // another way at apply, which is how a fuse redefines a bottle.
+      final (a, b) = twoDevices();
+      for (final s in [a, b]) {
+        s.ingredients.add(
+          Ingredient(
+            id: s == a ? 'local-nic' : 'remote-nic',
+            name: 'Nic base',
+            kind: IngredientKind.nicotine,
+            density: 1.261,
+            nicStrength: 100,
+            nicUnit: NicUnit.perGram,
+            carrierVg: 1,
+            updatedAt: DateTime(2026, 1, 1),
+          ),
+        );
+      }
+
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.matchedByName, 1);
+
+      await a.applyMerge(plan);
+      expect(a.ingredients.length, 1);
+      expect(a.byId('local-nic')!.nicMgPerMl, closeTo(126.1, 1e-9));
+    });
+
+    test('a matching base still dedupes', () async {
+      // The guard must not cost the feature: two installs that typed in
+      // the same base identically are still one bottle.
+      final (a, b) = twoDevices();
+      nicBase(a, 'local-nic', 'Nic base', 100, carrierVg: 0.5);
+      nicBase(b, 'remote-nic', 'Nic base', 100, carrierVg: 0.5);
+
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.matchedByName, 1);
+
+      await a.applyMerge(plan);
+      expect(a.ingredients.length, 1);
+      expect(a.byId('local-nic')!.nicMgPerMl, closeTo(100, 1e-9));
+    });
+
+    test('their recipe base pins point at our ingredient', () async {
+      // The reference rewrite has to reach the v12 pins too, or the recipe
+      // lands pinned to an id this device has never stored and baseFor
+      // silently falls back to the first base of that kind.
+      final (a, b) = twoDevices();
+      nicBase(a, 'local-nic', 'Nic base', 250);
+      nicBase(b, 'remote-nic', 'Nic base', 250);
+      b.recipes.add(
+        Recipe(id: 'r1', name: 'Theirs', nicId: 'remote-nic')
+          ..updatedAt = DateTime(2026, 2, 1),
+      );
+
+      await a.applyMerge(a.previewMerge(b.exportJson()));
+
+      final r = a.recipeById('r1')!;
+      expect(r.nicId, 'local-nic');
+      expect(a.hasMissingBase(r), isFalse);
+      expect(a.baseFor(r, IngredientKind.nicotine)!.id, 'local-nic');
+    });
+
+    test('a name duplicate cannot collide with an id already present', () {
+      // 'shared' arrives by id, so it is spoken for. Aliasing 'dupe' onto
+      // it as well would put two records with the same id in one plan.
+      final (a, b) = twoDevices();
+      typed(a, 'shared', 'TFA', 'Strawberry (Ripe)');
+      typed(b, 'shared', 'TFA', 'Strawberry (Ripe)').updatedAt = DateTime(
+        2026,
+        6,
+        1,
+      );
+      typed(b, 'dupe', 'TFA', 'Strawberry (Ripe)').updatedAt = DateTime(
+        2026,
+        3,
+        1,
+      );
+
+      final plan = a.previewMerge(b.exportJson());
+      expect(plan.matchedByName, 0);
+
+      final ids = plan.ofType(RecordType.ingredient).map((i) => i.id).toList();
+      expect(
+        ids.length,
+        ids.toSet().length,
+        reason: 'one id twice in a plan resolves in list order, not by time',
+      );
     });
   });
 
