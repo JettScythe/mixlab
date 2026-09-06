@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mixlab/main.dart';
+import 'package:mixlab/models/recipe.dart';
 import 'package:mixlab/state.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -62,12 +63,26 @@ void main() {
     _useDesktopSurface(tester);
     final state = await _boot(tester);
 
-    // The list sorts by name, so work out which card lands first rather
-    // than assuming seed order.
-    final names = state.recipes.map((r) => r.name).toList()
-      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
-    final firstName = names.first;
+    // Cold start has an empty library, so stage a recipe the way a user
+    // would arrive at one — through the parse path the starter library
+    // and the clipboard share.
+    state.addRecipe(
+      Recipe(
+        id: 'r1',
+        name: 'Widget Test Recipe',
+        batchMl: 30,
+        targetNic: 3,
+        flavors: [
+          RecipeFlavor(
+            ingredientId: state.ingredients.first.id,
+            name: state.ingredients.first.displayName,
+            percent: 5,
+          ),
+        ],
+      )..updatedAt = DateTime.now(),
+    );
 
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Recipes').first);
     await tester.pumpAndSettle();
 
@@ -76,7 +91,7 @@ void main() {
 
     // The chip appears on the Mix tab, and the source card is still alive
     // in the IndexedStack, so expect more than one match.
-    expect(find.text(firstName), findsWidgets);
+    expect(find.text('Widget Test Recipe'), findsWidgets);
   });
 
   testWidgets('narrow layout uses bottom navigation', (tester) async {

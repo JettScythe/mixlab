@@ -7,6 +7,7 @@ import '../theme.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/recipe_text_dialog.dart';
 import '../widgets/star_rating.dart';
+import '../widgets/starter_library.dart';
 import '../widgets/toast.dart';
 import 'import_page.dart';
 import 'recipe_detail_page.dart';
@@ -231,10 +232,11 @@ class _RecipesPageState extends State<RecipesPage> {
                           icon: Icons.menu_book_outlined,
                           title: 'No recipes yet',
                           message:
-                              'Paste one in from e-liquid-recipes.com or '
-                              'AllTheFlavors, or build one from scratch.',
-                          actionLabel: 'Import a recipe',
-                          onAction: _openImport,
+                              'Load a starter recipe, paste one in from '
+                              'e-liquid-recipes.com or AllTheFlavors, or '
+                              'build one from scratch.',
+                          actionLabel: 'Browse starter recipes',
+                          onAction: _openStarterLibrary,
                         ))
                 : ListView.builder(
                     itemCount: recipes.length,
@@ -533,6 +535,25 @@ class _RecipesPageState extends State<RecipesPage> {
   Future<void> _openImport() async {
     final r = await Navigator.of(context).push<Recipe>(
       MaterialPageRoute(builder: (_) => ImportRecipePage(state: state)),
+    );
+    if (r != null && mounted) setState(() {});
+  }
+
+  /// The bundled starter library. Shows a picker of the recipes in the
+  /// asset; picking one drops it into the normal import flow, where every
+  /// ingredient it needs is reviewed and auto-created with no stock.
+  Future<void> _openStarterLibrary() async {
+    final text = await showStarterLibraryPicker(context, state);
+    if (!mounted || text == null) return; // dismissed
+    if (text.isEmpty) {
+      // "Paste my own" — straight into the normal paste flow.
+      await _openImport();
+      return;
+    }
+    final r = await Navigator.of(context).push<Recipe>(
+      MaterialPageRoute(
+        builder: (_) => ImportRecipePage(state: state, initialText: text),
+      ),
     );
     if (r != null && mounted) setState(() {});
   }

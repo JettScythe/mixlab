@@ -89,7 +89,7 @@ Rough positioning first:
 | Capability | MixLab | eJuice Me Up | ELR | ATF | Steam Engine |
 | --- | --- | --- | --- | --- | --- |
 | Save and reload recipes | Yes | Yes | Yes | Yes | No |
-| Seeded with DIY classics | Yes | No | n/a | n/a | No |
+| Bundled starter library (opt-in) | Yes | No | n/a | n/a | No |
 | Shared public recipe database | No | No | Yes | Yes | No |
 | Import by pasting from ELR or AllTheFlavors | Yes | No | n/a | n/a | No |
 | Export a recipe as shareable plain text | Yes | No | Yes | Yes | No |
@@ -228,7 +228,8 @@ dart format .
 ## Your data
 
 Stored locally via `shared_preferences`, in the OS-standard location for
-each platform. No network calls, no telemetry, no account.
+each platform. No telemetry, no account, and no network calls — nothing
+in the app reaches the network on its own.
 
 Export from Settings before upgrading between betas. There are two ways
 back in:

@@ -93,6 +93,9 @@ int csvRowCount(String line) {
 }
 
 void main() {
+  // rootBundle (starter-recipes asset) needs a binding.
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('calculateMix', () {
     test('30 mL, 70/30, 3 mg from a 100 mg PG base', () {
       final r = calculateMix(
@@ -891,7 +894,7 @@ void main() {
       expect(s.loadError, isNotNull);
     });
 
-    test('hardReset recovers to a working seeded state', () async {
+    test('hardReset recovers to a working cold-start state', () async {
       SharedPreferences.setMockInitialValues({'ingredients_v1': 'garbage'});
       final s = AppState();
       await waitReady(s);
@@ -899,8 +902,10 @@ void main() {
 
       await s.hardReset();
       expect(s.loadError, isNull);
+      // Ingredients seed (PG/VG/nicotine at zero stock); recipes do not —
+      // the library starts empty and the starter library is opt-in.
       expect(s.ingredients, isNotEmpty);
-      expect(s.recipes, isNotEmpty);
+      expect(s.recipes, isEmpty);
     });
   });
 
@@ -1123,18 +1128,98 @@ void main() {
       expect(s.byId('v')!.costPerMl, closeTo(0.028, 1e-3));
     });
 
-    test('a fresh install seeds stock through the ledger', () async {
+    test('a fresh install seeds bottles with zero stock', () async {
       SharedPreferences.setMockInitialValues({});
       final s = AppState();
       await waitReady(s);
 
-      expect(s.adjustments, isNotEmpty);
-      expect(
-        s.adjustments.every((a) => a.reason == AdjustReason.opening),
-        isTrue,
-      );
-      final vg = s.ingredients.firstWhere((e) => e.name == 'VG');
-      expect(vg.stockMl, closeTo(500, 1e-9));
+      // No opening balances since v0.8: the seeded bottles are product
+      // options, not stock the user actually has.
+      expect(s.adjustments, isEmpty);
+      for (final name in ['PG', 'VG', 'Nic 100mg (PG)']) {
+        final e = s.ingredients.firstWhere((e) => e.name == name);
+        expect(e.stockMl, closeTo(0, 1e-9));
+        // The bottle size is the product option — what a bottle of this
+        // looks like — while the cost waits for a real purchase.
+        expect(e.bottleSizeMl, greaterThan(0));
+        expect(e.bottleCost, 0);
+      }
+    });
+
+    test('the starter library parses into distinct recipes', () async {
+      SharedPreferences.setMockInitialValues({});
+      final s = AppState();
+      await waitReady(s);
+
+      final starters = await s.parseStarterRecipes();
+      // Exactly six, by name: a delimiter typo would merge two recipes
+      // and a slack >=5 would still pass.
+      expect(starters.map((r) => r.name).toList(), [
+        'Mustard Milk',
+        'Nana Cream',
+        'Unicorn Milk (clone)',
+        'Tribeca (clone)',
+        'Castle Long (clone)',
+        'Looper (clone)',
+      ]);
+
+      // Documented per-recipe shape. The note lines are comment-marked in
+      // the asset — without the marker, 'add 2% Vanilla Bean Ice Cream'
+      // in the Nana Cream note parsed back as a phantom 2% ingredient.
+      // Documented per-recipe shape. The note lines are comment-marked in
+      // the asset — without the marker, 'add 2% Vanilla Bean Ice Cream'
+      // in the Nana Cream note parsed back as a phantom 2% ingredient.
+      final expectedFlavors = {
+        'Mustard Milk': 2,
+        'Nana Cream': 2,
+        'Unicorn Milk (clone)': 4,
+        'Tribeca (clone)': 3,
+        'Castle Long (clone)': 5,
+        'Looper (clone)': 2,
+      };
+      for (final r in starters) {
+        expect(r.flavors.length, expectedFlavors[r.name], reason: r.name);
+        expect(r.sourceText, isNotNull, reason: 'needed by the import review');
+
+        final reparsed = parseRecipeText(r.sourceText!);
+        expect(reparsed.lines.length, r.flavors.length, reason: r.name);
+        // A note line landing in ignored is noise in the review; a note
+        // landing in lines is a phantom ingredient.
+        expect(reparsed.ignored, isEmpty, reason: r.name);
+        // Documented totals — Mustard Milk 8+6, Nana Cream 6+4, etc.
+        expect(r.totalFlavorPercent, switch (r.name) {
+          'Mustard Milk' => 14,
+          'Nana Cream' => 10,
+          'Unicorn Milk (clone)' => 16,
+          'Tribeca (clone)' => 12,
+          'Castle Long (clone)' => 9,
+          _ => 13,
+        }, reason: r.name);
+      }
+    });
+
+    test('existing installs are never re-seeded', () async {
+      // The invariant the whole cold-start change rests on: an install
+      // with data keeps exactly what it had, even with recipes absent.
+      SharedPreferences.setMockInitialValues({
+        'schema_version': 13,
+        'ingredients_v1': jsonEncode([
+          {
+            'id': 'mine',
+            'name': 'My PG',
+            'kind': IngredientKind.pg.index,
+            'density': 1.036,
+          },
+        ]),
+        // recipes_v1 deliberately absent.
+      });
+      final s = AppState();
+      await waitReady(s);
+
+      expect(s.ingredients.length, 1);
+      expect(s.ingredients.single.id, 'mine');
+      expect(s.recipes, isEmpty);
+      expect(s.adjustments, isEmpty);
     });
   });
 

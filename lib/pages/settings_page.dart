@@ -8,6 +8,7 @@ import 'package:mixlab/models/enums.dart';
 import 'package:mixlab/models/settings.dart';
 import 'package:mixlab/models/units.dart';
 import 'package:mixlab/csv_export.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../state.dart';
 import '../theme.dart';
@@ -549,12 +550,29 @@ class _SettingsPageState extends State<SettingsPage> {
       final suggested = 'mixlab-backup-$stamp.json';
 
       if (!_canSaveToFile) {
-        await Clipboard.setData(ClipboardData(text: json));
+        // Mobile: no save panel in file_selector, so hand the file to the
+        // system share sheet — the user can save it to Files, send it
+        // anywhere, or ignore it. share_plus ignores XFile.fromData's
+        // name on IO platforms; fileNameOverrides is what makes the
+        // date-stamped name survive.
+        final result = await SharePlus.instance.share(
+          ShareParams(
+            files: [
+              XFile.fromData(
+                Uint8List.fromList(utf8.encode(json)),
+                mimeType: 'application/json',
+              ),
+            ],
+            fileNameOverrides: [suggested],
+          ),
+        );
         if (!mounted) return;
+        if (result.status == ShareResultStatus.dismissed) return;
         showToast(
           context,
-          'Saving to a file is not supported here — backup copied to the '
-          'clipboard instead.',
+          result.status == ShareResultStatus.success
+              ? 'Backup shared.'
+              : 'Sharing unavailable — backup JSON is on the clipboard.',
         );
         return;
       }
@@ -609,12 +627,25 @@ class _SettingsPageState extends State<SettingsPage> {
       final suggested = 'mixlab-$stamp.csv';
 
       if (!_canSaveToFile) {
-        await Clipboard.setData(ClipboardData(text: csv));
+        // Mobile: share sheet (see _export for the reasoning).
+        final result = await SharePlus.instance.share(
+          ShareParams(
+            files: [
+              XFile.fromData(
+                Uint8List.fromList(utf8.encode(csv)),
+                mimeType: 'text/csv',
+              ),
+            ],
+            fileNameOverrides: [suggested],
+          ),
+        );
         if (!mounted) return;
+        if (result.status == ShareResultStatus.dismissed) return;
         showToast(
           context,
-          'Saving to a file is not supported here — CSV copied to the '
-          'clipboard instead.',
+          result.status == ShareResultStatus.success
+              ? 'CSV shared.'
+              : 'Sharing unavailable — CSV is on the clipboard.',
         );
         return;
       }
@@ -706,8 +737,9 @@ class _SettingsPageState extends State<SettingsPage> {
       builder: (context) => AlertDialog(
         title: const Text('Reset all data?'),
         content: const Text(
-          'Everything goes back to the seeded flavors and recipes. Export a '
-          'backup first if you care about your stash.',
+          'Everything is deleted and the default PG, VG and nicotine '
+          'bottles come back at zero stock. Export a backup first if you '
+          'care about your stash.',
         ),
         actions: [
           TextButton(

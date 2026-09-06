@@ -15,8 +15,14 @@ import '../widgets/toast.dart';
 /// Paste a recipe from ELR, AllTheFlavors, a spreadsheet or a forum post,
 /// review how it was understood, then import it.
 class ImportRecipePage extends StatefulWidget {
-  const ImportRecipePage({super.key, required this.state});
+  const ImportRecipePage({super.key, required this.state, this.initialText});
+
   final AppState state;
+
+  /// Pre-fills the paste field, e.g. from the bundled starter library.
+  /// The user still sees the full review screen — auto-created
+  /// ingredients, percentages, everything — before anything is saved.
+  final String? initialText;
 
   @override
   State<ImportRecipePage> createState() => _ImportRecipePageState();
@@ -90,7 +96,19 @@ class _ImportRecipePageState extends State<ImportRecipePage> {
     _batch.text = set.defaultBatchMl.toStringAsFixed(0);
     _nic.text = '3';
     _vg.text = set.defaultVgPercent.toStringAsFixed(0);
-    _percentMode = set.defaultPercentMode;
+    // A bundled starter is a known by-volume document — the paste dialect
+    // cannot express the mode, so the user's default must not silently
+    // re-scale every amount in it.
+    _percentMode = widget.initialText != null
+        ? PercentMode.byVolume
+        : set.defaultPercentMode;
+    if (widget.initialText != null) {
+      _paste.text = widget.initialText!;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _parse();
+      });
+    }
   }
 
   @override
@@ -120,11 +138,12 @@ class _ImportRecipePageState extends State<ImportRecipePage> {
     });
   }
 
-  Future<void> _pasteFromClipboard() async {
-    final data = await Clipboard.getData(Clipboard.kTextPlain);
-    if (data?.text == null) return;
-    _paste.text = data!.text!;
-    _parse();
+  void _pasteFromClipboard() {
+    Clipboard.getData(Clipboard.kTextPlain).then((data) {
+      if (data?.text == null) return;
+      _paste.text = data!.text!;
+      _parse();
+    });
   }
 
   double _val(TextEditingController c) => parseNum(c.text) ?? 0;

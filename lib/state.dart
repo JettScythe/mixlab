@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:mixlab/cost_basis.dart';
 import 'package:mixlab/models/calculate_mix.dart';
 import 'package:mixlab/models/enums.dart';
@@ -164,9 +165,6 @@ class AppState extends ChangeNotifier {
             (e) => Recipe.fromJson(e as Map<String, dynamic>),
           ),
         );
-      } else {
-        _seedRecipes();
-        seeded = true;
       }
 
       final lraw = prefs.getString(_kMixLog);
@@ -781,7 +779,6 @@ class AppState extends ChangeNotifier {
     tombstones.clear();
     settings = Settings();
     _seedIngredients();
-    _seedRecipes();
     loadError = null;
     notifyListeners();
     await _save();
@@ -799,132 +796,67 @@ class AppState extends ChangeNotifier {
   // ----------------------------------------------------------------- seeding
 
   void _seedIngredients() {
-    Ingredient mk(
-      String name,
-      IngredientKind kind, {
-      double carrierVg = 0,
-      double size = 0,
-      double cost = 0,
-      double nic = 0,
-    }) => Ingredient(
-      id: newId(),
-      name: name,
-      kind: kind,
-      carrierVg: carrierVg,
-      density: settings.densityForCarrier(kind, carrierVg),
-      bottleSizeMl: size,
-      bottleCost: cost,
-      nicStrength: nic,
-      updatedAt: DateTime.now(),
-    );
-
-    final seeded = [
-      mk('PG', IngredientKind.pg, size: 500, cost: 12),
-      mk('VG', IngredientKind.vg, size: 500, cost: 14),
-      mk(
-        'Nic 100mg (PG)',
-        IngredientKind.nicotine,
-        size: 120,
-        cost: 25,
-        nic: 100,
+    // Cold start: bottle sizes and nicotine strength give the new user
+    // product options to fill in, but stock stays at zero and cost at
+    // zero until real purchases are entered. No opening balances — fake
+    // stock is the confusion this seed exists to replace, not a feature.
+    ingredients.addAll([
+      Ingredient(
+        id: newId(),
+        name: 'PG',
+        kind: IngredientKind.pg,
+        density: settings.densityForCarrier(IngredientKind.pg, 0),
+        bottleSizeMl: 500,
+        updatedAt: DateTime.now(),
       ),
-    ];
-    ingredients.addAll(seeded);
-
-    // Stock enters through the ledger, never by assignment.
-    final now = DateTime.now();
-    for (final e in seeded) {
-      if (e.bottleSizeMl <= 0) continue;
-      adjustments.add(
-        StockAdjustment(
-          id: newId(),
-          ingredientId: e.id,
-          ingredientName: e.displayName,
-          at: now,
-          deltaMl: e.bottleSizeMl,
-          reason: AdjustReason.opening,
-          costPerMl: e.bottleCost / e.bottleSizeMl,
-          note: 'Starting stock.',
-          updatedAt: now,
-        ),
-      );
-    }
+      Ingredient(
+        id: newId(),
+        name: 'VG',
+        kind: IngredientKind.vg,
+        density: settings.densityForCarrier(IngredientKind.vg, 0),
+        bottleSizeMl: 500,
+        updatedAt: DateTime.now(),
+      ),
+      Ingredient(
+        id: newId(),
+        name: 'Nic 100mg (PG)',
+        kind: IngredientKind.nicotine,
+        density: settings.densityForCarrier(IngredientKind.nicotine, 0),
+        bottleSizeMl: 120,
+        nicStrength: 100,
+        updatedAt: DateTime.now(),
+      ),
+    ]);
     recomputeStock();
   }
 
-  /// r/DIY_eJuice classics, circa 2014-2016. Percentages are the commonly
-  /// posted versions — verify against ELR before trusting them.
-  void _seedRecipes() {
-    RecipeFlavor rf(Ingredient i, double pct) =>
-        RecipeFlavor(ingredientId: i.id, name: i.displayName, percent: pct);
+  /// Starter recipes as one paste-dialect document in assets/starter-recipes.txt,
+  /// imported through the same parser as the clipboard. Kept out of the
+  /// seed path so a fresh install starts with an empty library and the
+  /// user chooses what to load.
+  static const starterRecipesAsset = 'assets/starter-recipes.txt';
 
-    final sbRipe = ensureFlavor('TFA', 'Strawberry (Ripe)');
-    final vbic = ensureFlavor('TFA', 'Vanilla Bean Ice Cream');
-    final bananaCream = ensureFlavor('LA', 'Banana Cream');
-    final custard = ensureFlavor('CAP', 'Vanilla Custard v1');
-    final sweetCream = ensureFlavor('CAP', 'Sweet Cream');
-    final ry4 = ensureFlavor('TFA', 'RY4 Double');
-    final graham = ensureFlavor('TFA', 'Graham Cracker (Clear)');
-    final bourbon = ensureFlavor('TFA', 'Kentucky Bourbon');
-    final coconut = ensureFlavor('FW', 'Coconut');
-    final almond = ensureFlavor('FA', 'Almond');
-    final brownSugar = ensureFlavor('TFA', 'Brown Sugar');
-    final fruitCircles = ensureFlavor('TFA', 'Fruit Circles');
-
-    Recipe r(String name, String notes, List<RecipeFlavor> flavors) => Recipe(
-      id: newId(),
-      name: name,
-      notes: notes,
-      batchMl: 30,
-      targetNic: 3,
-      targetVgPercent: 70,
-      flavors: flavors,
-      updatedAt: DateTime.now(),
-    );
-
-    recipes.addAll([
-      r(
-        'Mustard Milk',
-        "u/Vurve's 2014 strawberry milk — the recipe that made TFA "
-            'Strawberry Ripe famous. Shake-and-vape friendly; some '
-            'versions run 6/6.',
-        [rf(sbRipe, 8), rf(vbic, 6)],
-      ),
-      r(
-        'Nana Cream',
-        "Botboy141's homage to the Bombies classic. Commonly posted at "
-            '6/4; add 2% Vanilla Bean Ice Cream for a richer take.',
-        [rf(bananaCream, 6), rf(sbRipe, 4)],
-      ),
-      r(
-        'Unicorn Milk (clone)',
-        'Cuttwood-style strawberry cream. Steep 1-2 weeks.',
-        [rf(sbRipe, 6), rf(custard, 4), rf(vbic, 4), rf(sweetCream, 2)],
-      ),
-      r('Tribeca (clone)', 'Halo-style RY4 tobacco. Steep 2+ weeks.', [
-        rf(ry4, 8),
-        rf(graham, 2),
-        rf(custard, 2),
-      ]),
-      r(
-        'Castle Long (clone)',
-        'Five Pawns-style coconut-almond-bourbon custard. '
-            'Long steep, 3+ weeks.',
-        [
-          rf(custard, 3),
-          rf(bourbon, 2),
-          rf(coconut, 2),
-          rf(almond, 1),
-          rf(brownSugar, 1),
-        ],
-      ),
-      r(
-        'Looper (clone)',
-        'Fruit-loops-and-milk in the style of the old Looper clones.',
-        [rf(fruitCircles, 10), rf(vbic, 3)],
-      ),
-    ]);
+  Future<List<Recipe>> parseStarterRecipes() async {
+    final raw = await rootBundle.loadString(starterRecipesAsset);
+    final out = <Recipe>[];
+    for (final chunk in raw.split(_starterRecipeDelimiter)) {
+      if (chunk.trim().isEmpty) continue;
+      final recipe = parseRecipeText(chunk.trim()).toRecipe()
+        // Carried so the picker can hand the original text to the import
+        // review — parsing back out of the Recipe would lose the notes'
+        // line structure and the exact percentages.
+        ..sourceText = chunk.trim();
+      out.add(recipe);
+    }
+    return out;
   }
+
+  /// Recipes beyond the first are separated by a line of dashes in the
+  /// asset. Kept generous so it survives copy-paste editing.
+  static final RegExp _starterRecipeDelimiter = RegExp(
+    r'^-{3,}\s*$',
+    multiLine: true,
+  );
 
   Ingredient ensureFlavor(String brand, String name) {
     final existing = flavorByName('$brand $name'.trim());
